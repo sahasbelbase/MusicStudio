@@ -81,7 +81,19 @@ static BOOL FindPython(const wchar_t *baseDir, wchar_t *outConsole, wchar_t *out
     return FALSE;
 }
 
-static BOOL CheckDependencies(const wchar_t *consolePy) {
+static BOOL CheckDependencies(const wchar_t *consolePy, const wchar_t *baseDir) {
+    // Build PYTHONPATH to include runtime\Lib\site-packages (installer puts packages there)
+    wchar_t sitePkgs[MAX_PATH];
+    _snwprintf(sitePkgs, MAX_PATH, L"%s\\runtime\\Lib\\site-packages", baseDir);
+
+    wchar_t runtimeDir[MAX_PATH];
+    _snwprintf(runtimeDir, MAX_PATH, L"%s\\runtime", baseDir);
+
+    // Compose extended PYTHONPATH
+    wchar_t pythonPath[MAX_PATH * 3];
+    _snwprintf(pythonPath, sizeof(pythonPath)/sizeof(wchar_t), L"%s;%s", sitePkgs, runtimeDir);
+    SetEnvironmentVariableW(L"PYTHONPATH", pythonPath);
+
     wchar_t cmdLine[MAX_PATH * 3];
     _snwprintf(cmdLine, sizeof(cmdLine) / sizeof(wchar_t),
         L"\"%s\" -c \"import fastapi, uvicorn, mutagen, yt_dlp, PIL\"",
@@ -108,7 +120,6 @@ static BOOL CheckDependencies(const wchar_t *consolePy) {
 
     if (!created) return FALSE;
 
-    // Wait up to 15 seconds for check
     WaitForSingleObject(pi.hProcess, 15000);
     DWORD exitCode = 1;
     GetExitCodeProcess(pi.hProcess, &exitCode);
@@ -119,12 +130,18 @@ static BOOL CheckDependencies(const wchar_t *consolePy) {
 }
 
 static BOOL InstallDependencies(const wchar_t *consolePy, const wchar_t *baseDir) {
+    // Check if we're using the bundled embedded runtime
+    wchar_t embeddedPy[MAX_PATH];
+    _snwprintf(embeddedPy, MAX_PATH, L"%s\\runtime\\python.exe", baseDir);
+    BOOL isEmbedded = FileExists(embeddedPy) && (_wcsicmp(consolePy, embeddedPy) == 0);
+
     int choice = MessageBoxW(
         NULL,
-        L"Music Studio is preparing for its first run on your computer.\n\n"
-        L"Required Python packages (fastapi, yt-dlp, pywebview, pillow, ffmpeg provider) are not yet installed.\n\n"
-        L"Would you like Music Studio to install them automatically now?",
-        L"Music Studio — Initial Setup",
+        L"Music Studio is setting up for its first run.\n\n"
+        L"Required packages (yt-dlp, fastapi, pywebview...) need to be installed.\n\n"
+        L"Click Yes to install them automatically now.\n"
+        L"This is a one-time setup and takes 1\u20135 minutes.",
+        L"Music Studio \u2014 First Run Setup",
         MB_ICONINFORMATION | MB_YESNO | MB_DEFBUTTON1
     );
 
@@ -135,18 +152,39 @@ static BOOL InstallDependencies(const wchar_t *consolePy, const wchar_t *baseDir
     wchar_t reqPath[MAX_PATH];
     _snwprintf(reqPath, MAX_PATH, L"%s\\requirements.txt", baseDir);
 
-    wchar_t cmdLine[MAX_PATH * 4];
-    _snwprintf(cmdLine, sizeof(cmdLine) / sizeof(wchar_t),
-        L"cmd.exe /c \"title Music Studio - Installing Packages && "
-        L"echo =================================================== && "
-        L"echo   Installing Music Studio Dependencies... && "
-        L"echo =================================================== && "
-        L"\"%s\" -m pip install -r \"%s\" && "
-        L"echo. && echo =================================================== && "
-        L"echo   Setup Complete! Starting Music Studio... && "
-        L"echo =================================================== && "
-        L"timeout /t 2 >nul\"",
-        consolePy, reqPath);
+    wchar_t sitePkgs[MAX_PATH];
+    _snwprintf(sitePkgs, MAX_PATH, L"%s\\runtime\\Lib\\site-packages", baseDir);
+
+    wchar_t cmdLine[MAX_PATH * 6];
+    if (isEmbedded) {
+        // Install into the embedded runtime's site-packages (matches NSIS installer)
+        _snwprintf(cmdLine, sizeof(cmdLine) / sizeof(wchar_t),
+            L"cmd.exe /c \"title Music Studio - Installing Packages && "
+            L"echo =========================================== && "
+            L"echo   Music Studio First-Run Setup && "
+            L"echo   Installing required packages... && "
+            L"echo =========================================== && "
+            L"\"%s\" -m pip install --no-warn-script-location --target=\"%s\" "
+            L"yt-dlp mutagen fastapi \"uvicorn[standard]\" requests pywebview "
+            L"pillow imageio-ffmpeg pydantic python-multipart certifi && "
+            L"echo. && echo   Setup complete! Starting Music Studio... && "
+            L"echo =========================================== && "
+            L"timeout /t 2 >nul\"",
+            consolePy, sitePkgs);
+    } else {
+        // System Python: normal pip install
+        _snwprintf(cmdLine, sizeof(cmdLine) / sizeof(wchar_t),
+            L"cmd.exe /c \"title Music Studio - Installing Packages && "
+            L"echo =========================================== && "
+            L"echo   Music Studio First-Run Setup && "
+            L"echo   Installing required packages... && "
+            L"echo =========================================== && "
+            L"\"%s\" -m pip install --no-warn-script-location -r \"%s\" && "
+            L"echo. && echo   Setup complete! Starting Music Studio... && "
+            L"echo =========================================== && "
+            L"timeout /t 2 >nul\"",
+            consolePy, reqPath);
+    }
 
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
@@ -160,7 +198,7 @@ static BOOL InstallDependencies(const wchar_t *consolePy, const wchar_t *baseDir
         NULL,
         NULL,
         FALSE,
-        0, // Visible console window
+        0, // Visible console window during install
         NULL,
         baseDir,
         &si,
@@ -168,11 +206,10 @@ static BOOL InstallDependencies(const wchar_t *consolePy, const wchar_t *baseDir
     );
 
     if (!created) {
-        MessageBoxW(NULL, L"Failed to start dependency installer.", L"Music Studio Error", MB_ICONERROR | MB_OK);
+        MessageBoxW(NULL, L"Failed to start the setup installer.", L"Music Studio Error", MB_ICONERROR | MB_OK);
         return FALSE;
     }
 
-    // Wait until installation finishes
     WaitForSingleObject(pi.hProcess, INFINITE);
     DWORD exitCode = 1;
     GetExitCodeProcess(pi.hProcess, &exitCode);
@@ -182,14 +219,24 @@ static BOOL InstallDependencies(const wchar_t *consolePy, const wchar_t *baseDir
     if (exitCode != 0) {
         MessageBoxW(
             NULL,
-            L"Dependency installation encountered an issue.\n\n"
-            L"Please run MusicStudio.bat or install manually in Command Prompt:\n"
+            L"Package installation encountered an issue.\n\n"
+            L"Please check your internet connection and try again.\n\n"
+            L"You can also install manually by running:\n"
             L"  pip install -r requirements.txt",
-            L"Music Studio — Setup Incomplete",
+            L"Music Studio \u2014 Setup Incomplete",
             MB_ICONWARNING | MB_OK
         );
         return FALSE;
     }
+
+    // Re-inject PYTHONPATH so the newly installed packages are found immediately
+    wchar_t newSitePkgs[MAX_PATH];
+    _snwprintf(newSitePkgs, MAX_PATH, L"%s\\runtime\\Lib\\site-packages", baseDir);
+    wchar_t runtimeDir[MAX_PATH];
+    _snwprintf(runtimeDir, MAX_PATH, L"%s\\runtime", baseDir);
+    wchar_t pythonPath[MAX_PATH * 3];
+    _snwprintf(pythonPath, sizeof(pythonPath)/sizeof(wchar_t), L"%s;%s", newSitePkgs, runtimeDir);
+    SetEnvironmentVariableW(L"PYTHONPATH", pythonPath);
 
     return TRUE;
 }
@@ -237,10 +284,19 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
 
     // Pre-flight check: verify dependencies are installed
-    if (!CheckDependencies(consolePy)) {
+    if (!CheckDependencies(consolePy, baseDir)) {
         if (!InstallDependencies(consolePy, baseDir)) {
             // User cancelled or install failed
             return 1;
+        }
+        // Re-check after install; if still failing, warn but continue
+        if (!CheckDependencies(consolePy, baseDir)) {
+            int cont = MessageBoxW(NULL,
+                L"Some dependencies could not be verified.\n\n"
+                L"Music Studio will try to start anyway.\n"
+                L"If it fails, please run MusicStudio.bat for details.",
+                L"Music Studio \u2014 Warning", MB_ICONWARNING | MB_OKCANCEL);
+            if (cont != IDOK) return 1;
         }
     }
 

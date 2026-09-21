@@ -16,6 +16,20 @@ BASE_DIR = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
+# ── Bundled runtime site-packages (installer drops packages here) ──────────────
+# When launched via MusicStudioLaunch.vbs or MusicStudio.exe with the embedded
+# Python runtime, packages are installed into runtime\Lib\site-packages via
+# `pip install --target`. We add this to sys.path so imports always resolve.
+_runtime_site_pkgs = os.path.join(BASE_DIR, "runtime", "Lib", "site-packages")
+if os.path.isdir(_runtime_site_pkgs) and _runtime_site_pkgs not in sys.path:
+    sys.path.insert(0, _runtime_site_pkgs)
+
+# Also support a flat runtime/ directory (some pip --target layouts put .dist-info at root)
+_runtime_dir = os.path.join(BASE_DIR, "runtime")
+if os.path.isdir(_runtime_dir) and _runtime_dir not in sys.path:
+    sys.path.insert(0, _runtime_dir)
+
+
 # Set Windows AppUserModelID so taskbar groups properly under Music Studio icon
 if sys.platform == 'win32':
     try:
@@ -158,38 +172,69 @@ except Exception:
     if sys.stderr is None:
         sys.stderr = open(os.devnull, 'w')
 
-# Guarded top-level imports with native graphical error dialog
-try:
-    import uvicorn
-    import ssl_helper  # Configure CA certificates & SSL bypass globally
-    from app import app, SONGS_DIR
-except Exception as err:
-    import traceback
-    tb = traceback.format_exc()
-    startup_err_file = os.path.join(log_dir, "startup_error.log")
+def _auto_install_deps():
+    """Attempt automatic dependency installation if any package is missing."""
+    import subprocess
+    py_exe = sys.executable
+    runtime_py = os.path.join(BASE_DIR, "runtime", "python.exe")
+    if os.path.isfile(runtime_py):
+        py_exe = runtime_py
+    req_file = os.path.join(BASE_DIR, "requirements.txt")
+    if not os.path.isfile(req_file):
+        return False
     try:
-        with open(startup_err_file, "w", encoding="utf-8") as f:
-            f.write(tb)
-    except Exception:
-        pass
-
-    missing_hint = ""
-    err_str = str(err)
-    if "No module named" in err_str or isinstance(err, ModuleNotFoundError):
-        missing_module = err_str.split("No module named")[-1].strip(" '\"")
-        missing_hint = (
-            f"\n\nMissing Python module: {missing_module}\n"
-            f"To fix this automatically, run MusicStudio.bat or install dependencies:\n"
-            f"  python -m pip install -r requirements.txt"
+        cmd = [py_exe, "-m", "pip", "install", "--no-warn-script-location", "-r", req_file]
+        site_pkgs = os.path.join(BASE_DIR, "runtime", "Lib", "site-packages")
+        if os.path.isdir(os.path.join(BASE_DIR, "runtime")):
+            cmd.insert(4, f"--target={site_pkgs}")
+        subprocess.run(
+            cmd,
+            creationflags=0x08000000 if sys.platform == "win32" else 0,
+            timeout=180,
+            check=True
         )
+        return True
+    except Exception:
+        return False
 
-    diag_msg = (
-        f"Music Studio encountered a startup error:\n\n"
-        f"{err_str}{missing_hint}\n\n"
-        f"Detailed log saved to:\n{startup_err_file}"
-    )
-    show_error_dialog("Music Studio — Startup Error", diag_msg)
-    sys.exit(1)
+# Guarded top-level imports with auto-install and native graphical error dialog
+for _attempt in range(2):
+    try:
+        import uvicorn
+        import ssl_helper  # Configure CA certificates & SSL bypass globally
+        from app import app, SONGS_DIR
+        break
+    except Exception as err:
+        if _attempt == 0 and ("No module named" in str(err) or isinstance(err, ModuleNotFoundError)):
+            if _auto_install_deps():
+                continue
+        import traceback
+        tb = traceback.format_exc()
+        startup_err_file = os.path.join(log_dir, "startup_error.log")
+        try:
+            with open(startup_err_file, "w", encoding="utf-8") as f:
+                f.write(tb)
+        except Exception:
+            pass
+
+        missing_hint = ""
+        err_str = str(err)
+        if "No module named" in err_str or isinstance(err, ModuleNotFoundError):
+            missing_module = err_str.split("No module named")[-1].strip(" '\"")
+            missing_hint = (
+                f"\n\nMissing Python module: {missing_module}\n"
+                f"To fix this automatically, run MusicStudio.bat or install dependencies:\n"
+                f"  python -m pip install -r requirements.txt"
+            )
+
+        diag_msg = (
+            f"Music Studio encountered a startup error:\n\n"
+            f"{err_str}{missing_hint}\n\n"
+            f"Detailed log saved to:\n{startup_err_file}"
+        )
+        show_error_dialog("Music Studio — Startup Error", diag_msg)
+        sys.exit(1)
+
 
 def find_available_port(default_port=5050):
     """Check if default port is free, or pick an available one."""
