@@ -277,6 +277,81 @@ def wait_for_server(port, timeout=10):
         time.sleep(0.1)
     return False
 
+def set_windows_taskbar_icon(window=None):
+    """Explicitly assign 32x32 and 16x16 icon to the Windows HWND and window class."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        icon_path = os.path.join(BASE_DIR, "MusicStudio.ico")
+        if not os.path.isfile(icon_path):
+            icon_path = os.path.join(os.getcwd(), "MusicStudio.ico")
+        if not os.path.isfile(icon_path):
+            return
+
+        hwnd = None
+        if window and hasattr(window, "native") and window.native and hasattr(window.native, "Handle"):
+            try:
+                hwnd = int(window.native.Handle.ToInt64())
+            except Exception:
+                pass
+
+        if not hwnd:
+            hwnd = ctypes.windll.user32.FindWindowW(None, "Music Studio")
+
+        if not hwnd:
+            def _retry():
+                time.sleep(0.4)
+                set_windows_taskbar_icon(window)
+            threading.Thread(target=_retry, daemon=True).start()
+            return
+
+        IMAGE_ICON = 1
+        LR_LOADFROMFILE = 0x00000010
+        WM_SETICON = 0x0080
+        ICON_SMALL = 0
+        ICON_BIG = 1
+        GCLP_HICON = -14
+        GCLP_HICONSM = -34
+
+        LoadImageW = ctypes.windll.user32.LoadImageW
+        LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+        LoadImageW.restype = wintypes.HANDLE
+
+        SendMessageW = ctypes.windll.user32.SendMessageW
+        SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        SendMessageW.restype = ctypes.c_long
+
+        # Load 32x32 for taskbar & Alt+Tab, and 16x16 for title bar
+        h_icon_big = LoadImageW(None, icon_path, IMAGE_ICON, 32, 32, LR_LOADFROMFILE)
+        h_icon_small = LoadImageW(None, icon_path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
+
+        if h_icon_big:
+            SendMessageW(hwnd, WM_SETICON, ICON_BIG, h_icon_big)
+        if h_icon_small:
+            SendMessageW(hwnd, WM_SETICON, ICON_SMALL, h_icon_small)
+
+        try:
+            SetClassLongPtrW = ctypes.windll.user32.SetClassLongPtrW
+            SetClassLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.HANDLE]
+            SetClassLongPtrW.restype = wintypes.HANDLE
+            if h_icon_big:
+                SetClassLongPtrW(hwnd, GCLP_HICON, h_icon_big)
+            if h_icon_small:
+                SetClassLongPtrW(hwnd, GCLP_HICONSM, h_icon_small)
+        except AttributeError:
+            SetClassLongW = ctypes.windll.user32.SetClassLongW
+            if h_icon_big:
+                SetClassLongW(hwnd, GCLP_HICON, h_icon_big)
+            if h_icon_small:
+                SetClassLongW(hwnd, GCLP_HICONSM, h_icon_small)
+
+        ctypes.windll.user32.RedrawWindow(hwnd, None, None, 0x0401)
+    except Exception as e:
+        print(f"[DesktopApp] Windows icon notice: {e}")
+
 def main():
     port = find_available_port(5050)
     server_thread = ServerThread(port)
@@ -298,6 +373,13 @@ def main():
         use_webview = False
 
     def on_gui_ready():
+        if sys.platform == "win32":
+            set_windows_taskbar_icon(window)
+            def _delayed_reapply():
+                time.sleep(0.5)
+                set_windows_taskbar_icon(window)
+            threading.Thread(target=_delayed_reapply, daemon=True).start()
+
         if sys.platform == "darwin":
             try:
                 import mac_nowplaying
@@ -358,7 +440,10 @@ def main():
                 except Exception as e:
                     print(f"Cocoa delegate notice: {e}")
 
-            webview.start(on_gui_ready, debug=False)
+            icon_file = os.path.join(BASE_DIR, "MusicStudio.ico")
+            if not os.path.isfile(icon_file):
+                icon_file = os.path.join(os.getcwd(), "MusicStudio.ico")
+            webview.start(on_gui_ready, debug=False, icon=icon_file if os.path.isfile(icon_file) else None)
         except Exception as e:
             print(f"Webview note: {e}. Falling back to default web browser.")
             webbrowser.open(url)
@@ -377,6 +462,7 @@ def main():
 
     print("Shutting down Music Studio...")
     server_thread.stop()
+
 
 if __name__ == "__main__":
     try:

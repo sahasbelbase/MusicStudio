@@ -45,7 +45,7 @@ SetCompressorDictSize 32
 ; Finish page
 !define MUI_FINISHPAGE_TITLE            "Installation Complete"
 !define MUI_FINISHPAGE_TEXT             "Music Studio has been installed successfully on your computer.$\r$\n$\r$\nClick Finish to close this wizard."
-!define MUI_FINISHPAGE_RUN             "$INSTDIR\MusicStudioLaunch.vbs"
+!define MUI_FINISHPAGE_RUN             "$INSTDIR\MusicStudio.exe"
 !define MUI_FINISHPAGE_RUN_TEXT        "Launch Music Studio"
 !define MUI_FINISHPAGE_LINK            "Visit Music Studio on GitHub"
 !define MUI_FINISHPAGE_LINK_LOCATION   "${APP_URL}"
@@ -143,7 +143,7 @@ Section "Core Application" SecCore
         Pop $0
     ${EndIf}
 
-    ; ---- Step 4: Create silent launcher (no console window) ----
+    ; ---- Step 4: Create silent launcher fallback ----
     SetDetailsPrint textonly
     DetailPrint "Creating application launcher..."
     SetDetailsPrint listonly
@@ -151,13 +151,17 @@ Section "Core Application" SecCore
     SetOutPath "$INSTDIR"
     FileOpen $0 "$INSTDIR\MusicStudioLaunch.vbs" w
     FileWrite $0 "Option Explicit$\r$\n"
-    FileWrite $0 "Dim WshShell, fso, appDir, batPath$\r$\n"
+    FileWrite $0 "Dim WshShell, fso, appDir, exePath$\r$\n"
     FileWrite $0 "Set fso = CreateObject($\"Scripting.FileSystemObject$\")$\r$\n"
     FileWrite $0 "Set WshShell = CreateObject($\"WScript.Shell$\")$\r$\n"
     FileWrite $0 "appDir = fso.GetParentFolderName(WScript.ScriptFullName)$\r$\n"
-    FileWrite $0 "batPath = appDir & $\"\MusicStudio.bat$\"$\r$\n"
+    FileWrite $0 "exePath = appDir & $\"\MusicStudio.exe$\"$\r$\n"
     FileWrite $0 "WshShell.CurrentDirectory = appDir$\r$\n"
-    FileWrite $0 "WshShell.Run Chr(34) & batPath & Chr(34), 0, False$\r$\n"
+    FileWrite $0 "If fso.FileExists(exePath) Then$\r$\n"
+    FileWrite $0 "    WshShell.Run Chr(34) & exePath & Chr(34), 0, False$\r$\n"
+    FileWrite $0 "Else$\r$\n"
+    FileWrite $0 "    WshShell.Run Chr(34) & appDir & $\"\MusicStudio.bat$\" & Chr(34), 0, False$\r$\n"
+    FileWrite $0 "End If$\r$\n"
     FileClose $0
 
     ; ---- Step 5: Create Desktop Shortcut ----
@@ -165,19 +169,16 @@ Section "Core Application" SecCore
     DetailPrint "Creating shortcuts..."
     SetDetailsPrint listonly
 
-
     CreateShortcut "$DESKTOP\Music Studio.lnk" \
-        "wscript.exe" \
-        '"$INSTDIR\MusicStudioLaunch.vbs"' \
+        "$INSTDIR\MusicStudio.exe" "" \
         "$INSTDIR\MusicStudio.ico" 0 \
         SW_SHOWNORMAL "" "Music Studio - Music Downloader & Player"
 
-    ; ---- Step 7: Create Start Menu shortcuts ----
+    ; ---- Step 6: Create Start Menu shortcuts ----
     !insertmacro MUI_STARTMENU_WRITE_BEGIN Application
         CreateDirectory "$SMPROGRAMS\$StartMenuFolder"
         CreateShortcut "$SMPROGRAMS\$StartMenuFolder\Music Studio.lnk" \
-            "wscript.exe" \
-            '"$INSTDIR\MusicStudioLaunch.vbs"' \
+            "$INSTDIR\MusicStudio.exe" "" \
             "$INSTDIR\MusicStudio.ico" 0 \
             SW_SHOWNORMAL "" "Music Studio - Music Downloader & Player"
         CreateShortcut "$SMPROGRAMS\$StartMenuFolder\Uninstall Music Studio.lnk" \
