@@ -105,8 +105,136 @@ document.addEventListener('DOMContentLoaded', () => {
   const confirmModalActionBtn = document.getElementById('confirm-modal-action-btn');
   let currentConfirmCallback = null;
 
-  // Audio Dock Elements
-  const audioEngine = document.getElementById('audio-engine');
+  // ==================== DUAL-DECK DJ AUDIO ENGINE & PROXY ====================
+  // Supports Apple Music-style smooth genre transitions and live DJ crossfading
+  const rawDeckA = document.getElementById('audio-engine');
+  const rawDeckB = document.getElementById('audio-engine-secondary');
+  let activeDeck = rawDeckA;
+  let standbyDeck = rawDeckB;
+  let currentMasterVolume = parseFloat(localStorage.getItem('musicstudio_volume') || localStorage.getItem('spotistudio_volume')) || 0.8;
+
+  // Crossfade state
+  let isCrossfading = false;
+  let crossfadeAnimId = null;
+  let crossfadeProgress = 0; // 0 to 1
+  let crossfadeOutgoingDeck = null;
+  let crossfadeIncomingDeck = null;
+  let hasTriggeredAutoCrossfade = false;
+  let isManualTransitionRequested = false;
+
+  // Unified event dispatcher for the active deck
+  const audioEventHandlers = {
+    timeupdate: new Set(),
+    loadedmetadata: new Set(),
+    durationchange: new Set(),
+    play: new Set(),
+    pause: new Set(),
+    ended: new Set(),
+    error: new Set()
+  };
+
+  function dispatchAudioEvent(eventName, originalEvent) {
+    const handlers = audioEventHandlers[eventName];
+    if (handlers) {
+      handlers.forEach(fn => {
+        try {
+          fn(originalEvent);
+        } catch (e) {
+          console.error(`Error in audio ${eventName} handler:`, e);
+        }
+      });
+    }
+  }
+
+  // Route raw DOM events from both physical audio elements
+  [rawDeckA, rawDeckB].forEach(deck => {
+    if (!deck) return;
+    deck.addEventListener('timeupdate', (e) => {
+      if (e.target === activeDeck) dispatchAudioEvent('timeupdate', e);
+    });
+    deck.addEventListener('loadedmetadata', (e) => {
+      if (e.target === activeDeck) dispatchAudioEvent('loadedmetadata', e);
+    });
+    deck.addEventListener('durationchange', (e) => {
+      if (e.target === activeDeck) dispatchAudioEvent('durationchange', e);
+    });
+    deck.addEventListener('play', (e) => {
+      if (e.target === activeDeck) dispatchAudioEvent('play', e);
+    });
+    deck.addEventListener('pause', (e) => {
+      if (e.target === activeDeck && (!isCrossfading || activeDeck.paused)) {
+        dispatchAudioEvent('pause', e);
+      }
+    });
+    deck.addEventListener('ended', (e) => {
+      if (isCrossfading && e.target === crossfadeOutgoingDeck) return;
+      if (e.target === activeDeck) dispatchAudioEvent('ended', e);
+    });
+    deck.addEventListener('error', (e) => {
+      if (e.target === activeDeck) dispatchAudioEvent('error', e);
+    });
+  });
+
+  // Virtual audioEngine Proxy: seamlessly intercepts all existing codebase references
+  const audioEngine = new Proxy(rawDeckA, {
+    get(target, prop) {
+      if (prop === 'volume') return currentMasterVolume;
+      if (prop === 'addEventListener') {
+        return (type, listener) => {
+          if (!audioEventHandlers[type]) audioEventHandlers[type] = new Set();
+          audioEventHandlers[type].add(listener);
+        };
+      }
+      if (prop === 'removeEventListener') {
+        return (type, listener) => {
+          if (audioEventHandlers[type]) audioEventHandlers[type].delete(listener);
+        };
+      }
+      if (prop === 'play') {
+        return () => {
+          if (isCrossfading && crossfadeOutgoingDeck && !crossfadeOutgoingDeck.paused) {
+            crossfadeOutgoingDeck.play().catch(() => {});
+          }
+          return activeDeck ? activeDeck.play() : Promise.resolve();
+        };
+      }
+      if (prop === 'pause') {
+        return () => {
+          if (isCrossfading && crossfadeOutgoingDeck) {
+            crossfadeOutgoingDeck.pause();
+          }
+          if (activeDeck) activeDeck.pause();
+        };
+      }
+      if (prop === 'load') {
+        return () => { if (activeDeck) activeDeck.load(); };
+      }
+      if (prop === 'rawElement' || prop === 'activeElement') {
+        return activeDeck;
+      }
+      if (!activeDeck) return undefined;
+      const val = Reflect.get(activeDeck, prop, activeDeck);
+      if (typeof val === 'function') {
+        return val.bind(activeDeck);
+      }
+      return val;
+    },
+    set(target, prop, value) {
+      if (prop === 'volume') {
+        currentMasterVolume = Math.max(0, Math.min(value, 1));
+        if (isCrossfading && crossfadeOutgoingDeck && crossfadeIncomingDeck) {
+          crossfadeOutgoingDeck.volume = currentMasterVolume * Math.cos(crossfadeProgress * 0.5 * Math.PI);
+          crossfadeIncomingDeck.volume = currentMasterVolume * Math.sin(crossfadeProgress * 0.5 * Math.PI);
+        } else {
+          if (activeDeck) activeDeck.volume = currentMasterVolume;
+          if (standbyDeck) standbyDeck.volume = 0;
+        }
+        return true;
+      }
+      if (activeDeck) Reflect.set(activeDeck, prop, value, activeDeck);
+      return true;
+    }
+  });
   const playerCover = document.getElementById('player-cover');
   const playerTitle = document.getElementById('player-title');
   const playerArtist = document.getElementById('player-artist');
@@ -128,6 +256,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const dockTrackInfo = document.getElementById('dock-track-info');
   const playerDock = document.getElementById('player-bar');
   const playerExpandBtn = document.getElementById('player-expand-btn');
+  const playerTransitionBtn = document.getElementById('player-transition-btn');
+  const fsTransitionBtn = document.getElementById('fs-transition-btn');
 
   // Fullscreen "Now Playing" Overlay Elements
   const fullscreenPlayer = document.getElementById('fullscreen-player');
@@ -312,6 +442,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let selectedSong = null;
   let searchDebounce = null;
   let previousVolume = parseFloat(localStorage.getItem('musicstudio_volume') || localStorage.getItem('spotistudio_volume')) || 0.8;
+  let transitionMode = localStorage.getItem('musicstudio_transition') === 'true'; // Smart Transition: OFF by default
 
   // Platform Icons SVG
   const ICONS = {
@@ -319,6 +450,787 @@ document.addEventListener('DOMContentLoaded', () => {
     spotify: `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.627.627 0 0 1-.863.208c-2.36-1.442-5.33-1.768-8.828-.97a.625.625 0 1 1-.277-1.22c3.827-.874 7.113-.502 9.76 1.118a.625.625 0 0 1 .208.864zm1.224-2.723a.784.784 0 0 1-1.08.258c-2.702-1.66-6.822-2.14-10.017-1.171a.784.784 0 1 1-.452-1.501c3.65-1.107 8.204-.576 11.29 1.334a.783.783 0 0 1 .259 1.08zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.94.94 0 1 1-.55-1.801c3.528-1.07 9.408-.86 13.136 1.353a.941.941 0 0 1-.969 1.604z"/></svg>`,
     youtube: `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>`
   };
+
+  // ==================== GENRE METADATA & BADGES ====================
+  function getGenreBadgeMeta(genre) {
+    const g = (genre || '').toLowerCase();
+    if (g.includes('pop')) return { icon: '🎤', bg: 'linear-gradient(135deg, #ec4899 0%, #8b5cf6 100%)', border: '#ec4899' };
+    if (g.includes('rock') || g.includes('metal') || g.includes('punk')) return { icon: '🎸', bg: 'linear-gradient(135deg, #ef4444 0%, #f97316 100%)', border: '#ef4444' };
+    if (g.includes('hip') || g.includes('rap') || g.includes('trap')) return { icon: '🎧', bg: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)', border: '#f59e0b' };
+    if (g.includes('elect') || g.includes('dance') || g.includes('house') || g.includes('edm') || g.includes('techno') || g.includes('club')) return { icon: '🎛️', bg: 'linear-gradient(135deg, #06b6d4 0%, #3b82f6 100%)', border: '#06b6d4' };
+    if (g.includes('classic') || g.includes('orchestr') || g.includes('piano') || g.includes('symphon')) return { icon: '🎻', bg: 'linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%)', border: '#8b5cf6' };
+    if (g.includes('jazz') || g.includes('blues') || g.includes('soul') || g.includes('funk')) return { icon: '🎷', bg: 'linear-gradient(135deg, #d97706 0%, #b45309 100%)', border: '#d97706' };
+    if (g.includes('r&b') || g.includes('rnb')) return { icon: '🎙️', bg: 'linear-gradient(135deg, #d946ef 0%, #c026d3 100%)', border: '#d946ef' };
+    if (g.includes('countr') || g.includes('folk') || g.includes('acoustic')) return { icon: '🪕', bg: 'linear-gradient(135deg, #f97316 0%, #ea580c 100%)', border: '#f97316' };
+    if (g.includes('reggae') || g.includes('dub') || g.includes('ska')) return { icon: '🌴', bg: 'linear-gradient(135deg, #10b981 0%, #eab308 100%)', border: '#10b981' };
+    if (g.includes('indie') || g.includes('alt')) return { icon: '🌿', bg: 'linear-gradient(135deg, #10b981 0%, #06b6d4 100%)', border: '#10b981' };
+    if (g.includes('latin') || g.includes('salsa') || g.includes('reggaeton')) return { icon: '💃', bg: 'linear-gradient(135deg, #f43f5e 0%, #e11d48 100%)', border: '#f43f5e' };
+    if (g.includes('bollywood') || g.includes('hindi') || g.includes('desi') || g.includes('punjabi') || g.includes('nepali')) return { icon: '🪘', bg: 'linear-gradient(135deg, #ea580c 0%, #c026d3 100%)', border: '#ea580c' };
+    if (g.includes('soundtrack') || g.includes('score') || g.includes('ost') || g.includes('movie')) return { icon: '🎬', bg: 'linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)', border: '#3b82f6' };
+    if (g.includes('chill') || g.includes('ambient') || g.includes('lofi') || g.includes('lo-fi')) return { icon: '🌌', bg: 'linear-gradient(135deg, #14b8a6 0%, #0f766e 100%)', border: '#14b8a6' };
+    if (g.includes('k-pop') || g.includes('j-pop') || g.includes('anime')) return { icon: '✨', bg: 'linear-gradient(135deg, #ec4899 0%, #06b6d4 100%)', border: '#ec4899' };
+    return { icon: '🎵', bg: 'linear-gradient(135deg, #6366f1 0%, #a855f7 100%)', border: '#6366f1' };
+  }
+
+  // ==================== SMART TRANSITION COLOR ENGINE ====================
+
+  /**
+   * Returns {primary, secondary} color strings for a genre (used as CORS fallback).
+   */
+  function getGenreColors(genre) {
+    const meta = getGenreBadgeMeta(genre);
+    const matches = meta.bg.match(/#([0-9a-fA-F]{6})/g);
+    if (matches && matches.length >= 2) return { primary: matches[0], secondary: matches[1] };
+    if (matches && matches.length === 1) return { primary: matches[0], secondary: matches[0] };
+    return { primary: '#10b981', secondary: '#8b5cf6' };
+  }
+
+  /**
+   * Extracts the dominant & accent colors from an image via Canvas API.
+   * Falls back gracefully to genre palette on CORS or canvas errors.
+   */
+  function extractDominantColor(imgSrc, genre) {
+    return new Promise((resolve) => {
+      const fallback = getGenreColors(genre);
+      if (!imgSrc || imgSrc === 'placeholder.svg' || imgSrc.endsWith('placeholder.svg')) {
+        return resolve(fallback);
+      }
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      const timeout = setTimeout(() => resolve(fallback), 3000);
+      img.onload = () => {
+        clearTimeout(timeout);
+        try {
+          const SIZE = 80;
+          const canvas = document.createElement('canvas');
+          canvas.width = SIZE;
+          canvas.height = SIZE;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, SIZE, SIZE);
+          const data = ctx.getImageData(0, 0, SIZE, SIZE).data;
+          let r1 = 0, g1 = 0, b1 = 0, c1 = 0;
+          let r2 = 0, g2 = 0, b2 = 0, c2 = 0;
+          for (let i = 0; i < data.length; i += 12) {
+            const r = data[i], g = data[i + 1], b = data[i + 2];
+            const brightness = (r + g + b) / 3;
+            if (brightness < 18 || brightness > 238) continue;
+            r1 += r; g1 += g; b1 += b; c1++;
+            const maxC = Math.max(r, g, b);
+            const minC = Math.min(r, g, b);
+            const sat = maxC === 0 ? 0 : (maxC - minC) / maxC;
+            if (sat > 0.35) { r2 += r; g2 += g; b2 += b; c2++; }
+          }
+          if (!c1) return resolve(fallback);
+          const pr = Math.round(r1 / c1);
+          const pg = Math.round(g1 / c1);
+          const pb = Math.round(b1 / c1);
+          const sr = c2 ? Math.round(r2 / c2) : Math.min(255, pr + 40);
+          const sg = c2 ? Math.round(g2 / c2) : Math.max(0, pg - 20);
+          const sb = c2 ? Math.round(b2 / c2) : Math.min(255, pb + 60);
+          resolve({
+            primary: `rgb(${sr},${sg},${sb})`,
+            secondary: `rgb(${Math.max(0, pr - 20)},${Math.max(0, pg - 20)},${Math.min(255, pb + 40)})`
+          });
+        } catch (e) {
+          resolve(fallback);
+        }
+      };
+      img.onerror = () => { clearTimeout(timeout); resolve(fallback); };
+      img.src = imgSrc;
+    });
+  }
+
+  /**
+   * Apple Music-style Smart Transition.
+   * Morphs ambient background orbs, fullscreen glow, and crossfades covers.
+   */
+  async function applySmartTransition(song) {
+    if (!transitionMode) return;
+    const genre = (song && (song.genre || resolveSongGenreForTransition(song))) || '';
+    const coverUrl = (song && song.cover_url) ? song.cover_url : 'placeholder.svg';
+
+    if (playerCover) playerCover.classList.add('cover-transitioning');
+    if (fsCover) fsCover.classList.add('cover-transitioning');
+
+    const colors = await extractDominantColor(coverUrl, genre);
+
+    const orbEmerald = document.querySelector('.orb-emerald');
+    const orbViolet  = document.querySelector('.orb-violet');
+    const orbCyan    = document.querySelector('.orb-cyan');
+    if (orbEmerald) orbEmerald.style.background = `radial-gradient(circle, ${colors.primary}, transparent 70%)`;
+    if (orbViolet)  orbViolet.style.background  = `radial-gradient(circle, ${colors.secondary}, transparent 70%)`;
+    if (orbCyan)    orbCyan.style.background    = `radial-gradient(circle, ${colors.primary}99, transparent 70%)`;
+
+    if (fsAmbientGlow) {
+      fsAmbientGlow.style.background = `radial-gradient(circle, ${colors.primary}3d 0%, ${colors.secondary}26 40%, transparent 70%)`;
+    }
+
+    const dockCoverWrap = document.getElementById('dock-cover-wrap');
+    if (dockCoverWrap) dockCoverWrap.classList.add('transition-active');
+
+    setTimeout(() => {
+      if (playerCover) playerCover.classList.remove('cover-transitioning');
+      if (fsCover) fsCover.classList.remove('cover-transitioning');
+    }, 380);
+  }
+
+  function resolveSongGenreForTransition(song) {
+    if (!song) return 'Studio Hits';
+    if (song.genre && song.genre !== 'General' && song.genre !== 'Unknown' && song.genre.trim()) {
+      return song.genre.trim();
+    }
+    const combined = `${song.artist || ''} ${song.title || ''} ${song.album || ''}`.toLowerCase();
+    if (combined.includes('rock') || combined.includes('metallica') || combined.includes('linkin') || combined.includes('nirvana') || combined.includes('beatles')) return 'Rock';
+    if (combined.includes('hip hop') || combined.includes('rap') || combined.includes('drake') || combined.includes('eminem') || combined.includes('kendrick') || combined.includes('kanye')) return 'Hip-Hop';
+    if (combined.includes('edm') || combined.includes('dance') || combined.includes('house') || combined.includes('avicii')) return 'Electronic';
+    if (combined.includes('pop') || combined.includes('swift') || combined.includes('sheeran') || combined.includes('grande') || combined.includes('bieber') || combined.includes('weeknd') || combined.includes('billie')) return 'Pop';
+    if (combined.includes('r&b') || combined.includes('sza') || combined.includes('beyonce') || combined.includes('rihanna')) return 'R&B';
+    if (combined.includes('classical') || combined.includes('mozart') || combined.includes('beethoven') || combined.includes('piano') || combined.includes('orchestra')) return 'Classical';
+    if (combined.includes('jazz') || combined.includes('sinatra') || combined.includes('coltrane')) return 'Jazz';
+    if (combined.includes('country') || combined.includes('luke combs') || combined.includes('wallen')) return 'Country';
+    if (combined.includes('latin') || combined.includes('bad bunny') || combined.includes('reggaeton')) return 'Latin';
+    if (combined.includes('k-pop') || combined.includes('bts') || combined.includes('blackpink')) return 'K-Pop';
+    if (combined.includes('hindi') || combined.includes('bollywood') || combined.includes('arijit') || combined.includes('nepali')) return 'Desi & Hindi';
+    if (combined.includes('lofi') || combined.includes('chill') || combined.includes('ambient')) return 'Chillout & Lofi';
+    if (combined.includes('indie') || combined.includes('tame impala') || combined.includes('arctic monkeys')) return 'Indie & Alternative';
+    if (combined.includes('soundtrack') || combined.includes('score') || combined.includes('zimmer')) return 'Soundtrack';
+    return 'Studio Hits';
+  }
+
+  function resetAmbientOrbs() {
+    const orbEmerald = document.querySelector('.orb-emerald');
+    const orbViolet  = document.querySelector('.orb-violet');
+    const orbCyan    = document.querySelector('.orb-cyan');
+    if (orbEmerald) orbEmerald.style.background = 'radial-gradient(circle, var(--emerald), transparent 70%)';
+    if (orbViolet)  orbViolet.style.background  = 'radial-gradient(circle, var(--violet), transparent 70%)';
+    if (orbCyan)    orbCyan.style.background    = 'radial-gradient(circle, var(--cyan), transparent 70%)';
+    if (fsAmbientGlow) {
+      fsAmbientGlow.style.background = 'radial-gradient(circle, rgba(16,185,129,0.2) 0%, rgba(6,182,212,0.12) 40%, transparent 70%)';
+    }
+    const dockCoverWrap = document.getElementById('dock-cover-wrap');
+    if (dockCoverWrap) dockCoverWrap.classList.remove('transition-active');
+  }
+
+  // ==================== ADVANCED WEB AUDIO DJ FX PROCESSOR ====================
+  const djAudioFx = {
+    ctx: null,
+    sourceA: null,
+    sourceB: null,
+    filterA: null,
+    filterB: null,
+    gainA: null,
+    gainB: null,
+    echoSendA: null,
+    echoSendB: null,
+    echoDelay: null,
+    echoFeedback: null,
+    echoFilter: null,
+    masterGain: null,
+    isInitialized: false,
+
+    init() {
+      if (this.isInitialized) return true;
+      try {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContextClass) return false;
+        this.ctx = new AudioContextClass();
+
+        // Deck A Nodes
+        this.sourceA = this.ctx.createMediaElementSource(rawDeckA);
+        this.filterA = this.ctx.createBiquadFilter();
+        this.filterA.type = 'lowpass';
+        this.filterA.frequency.value = 22050;
+        this.filterA.Q.value = 1.0;
+        this.gainA = this.ctx.createGain();
+        this.gainA.gain.value = 1.0;
+
+        // Deck B Nodes
+        this.sourceB = this.ctx.createMediaElementSource(rawDeckB);
+        this.filterB = this.ctx.createBiquadFilter();
+        this.filterB.type = 'highpass';
+        this.filterB.frequency.value = 20;
+        this.filterB.Q.value = 1.0;
+        this.gainB = this.ctx.createGain();
+        this.gainB.gain.value = 1.0;
+
+        // Master Output
+        this.masterGain = this.ctx.createGain();
+        this.masterGain.gain.value = 1.0;
+
+        // Stereo Dub Delay / Echo-Out Bus
+        this.echoSendA = this.ctx.createGain();
+        this.echoSendA.gain.value = 0.0;
+        this.echoSendB = this.ctx.createGain();
+        this.echoSendB.gain.value = 0.0;
+
+        this.echoDelay = this.ctx.createDelay(1.5);
+        this.echoDelay.delayTime.value = 0.35; // ~1/2 beat at 85-130 BPM
+
+        this.echoFeedback = this.ctx.createGain();
+        this.echoFeedback.gain.value = 0.44; // smooth musical decay
+
+        this.echoFilter = this.ctx.createBiquadFilter();
+        this.echoFilter.type = 'lowpass';
+        this.echoFilter.frequency.value = 2600; // warm tape delay color
+
+        // Wire Deck A
+        this.sourceA.connect(this.filterA);
+        this.filterA.connect(this.gainA);
+        this.gainA.connect(this.masterGain);
+        this.sourceA.connect(this.echoSendA);
+        this.echoSendA.connect(this.echoDelay);
+
+        // Wire Deck B
+        this.sourceB.connect(this.filterB);
+        this.filterB.connect(this.gainB);
+        this.gainB.connect(this.masterGain);
+        this.sourceB.connect(this.echoSendB);
+        this.echoSendB.connect(this.echoDelay);
+
+        // Wire Echo Loop
+        this.echoDelay.connect(this.echoFilter);
+        this.echoFilter.connect(this.echoFeedback);
+        this.echoFeedback.connect(this.echoDelay);
+        this.echoFilter.connect(this.masterGain);
+
+        // Connect Master to Speakers
+        this.masterGain.connect(this.ctx.destination);
+
+        this.isInitialized = true;
+        return true;
+      } catch (err) {
+        console.warn('Web Audio DJ Engine fallback to native audio:', err);
+        return false;
+      }
+    },
+
+    resume() {
+      if (this.ctx && this.ctx.state === 'suspended') {
+        this.ctx.resume().catch(() => {});
+      }
+    },
+
+    resetFilters() {
+      if (!this.isInitialized || !this.ctx) return;
+      const t = this.ctx.currentTime;
+      try {
+        if (this.filterA) {
+          this.filterA.type = 'lowpass';
+          this.filterA.frequency.cancelScheduledValues(t);
+          this.filterA.frequency.setValueAtTime(22050, t);
+        }
+        if (this.filterB) {
+          this.filterB.type = 'highpass';
+          this.filterB.frequency.cancelScheduledValues(t);
+          this.filterB.frequency.setValueAtTime(20, t);
+        }
+        if (this.echoSendA) {
+          this.echoSendA.gain.cancelScheduledValues(t);
+          this.echoSendA.gain.setValueAtTime(0, t);
+        }
+        if (this.echoSendB) {
+          this.echoSendB.gain.cancelScheduledValues(t);
+          this.echoSendB.gain.setValueAtTime(0, t);
+        }
+      } catch (e) {}
+    },
+
+    applyFilterSweep(outgoingDeck, incomingDeck, durationSec) {
+      if (!this.isInitialized || !this.ctx) return;
+      this.resume();
+      const t = this.ctx.currentTime;
+      const dur = Math.max(0.8, durationSec);
+
+      const isOutgoingA = (outgoingDeck === rawDeckA);
+      const outFilter = isOutgoingA ? this.filterA : this.filterB;
+      const inFilter = isOutgoingA ? this.filterB : this.filterA;
+
+      try {
+        // Outgoing track: sweep lowpass down to 260Hz so bass/highs leave space
+        outFilter.type = 'lowpass';
+        outFilter.frequency.cancelScheduledValues(t);
+        outFilter.frequency.setValueAtTime(22050, t);
+        outFilter.frequency.exponentialRampToValueAtTime(260, t + dur * 0.85);
+
+        // Incoming track: highpass starts at 450Hz (no clashing bass!) and sweeps down to 20Hz (clean bass drop)
+        inFilter.type = 'highpass';
+        inFilter.frequency.cancelScheduledValues(t);
+        inFilter.frequency.setValueAtTime(450, t);
+        inFilter.frequency.exponentialRampToValueAtTime(20, t + dur * 0.95);
+      } catch (e) {}
+    },
+
+    triggerEchoOut(outgoingDeck, durationSec = 2.0) {
+      if (!this.isInitialized || !this.ctx) return;
+      this.resume();
+      const t = this.ctx.currentTime;
+      const isOutgoingA = (outgoingDeck === rawDeckA);
+      const sendNode = isOutgoingA ? this.echoSendA : this.echoSendB;
+
+      try {
+        sendNode.gain.cancelScheduledValues(t);
+        sendNode.gain.setValueAtTime(0.85, t);
+        sendNode.gain.setValueAtTime(0.85, t + 0.28);
+        sendNode.gain.linearRampToValueAtTime(0, t + 0.55);
+      } catch (e) {}
+    },
+
+    triggerVinylBrake(deck, durationSec = 0.38) {
+      if (!deck) return;
+      try {
+        const startRate = deck.playbackRate || 1.0;
+        const startTime = performance.now();
+        const durMs = durationSec * 1000;
+        const brakeStep = (now) => {
+          const progress = Math.min(1, (now - startTime) / durMs);
+          deck.playbackRate = Math.max(0.06, startRate * (1 - Math.pow(progress, 1.8)));
+          if (progress < 1) {
+            requestAnimationFrame(brakeStep);
+          } else {
+            deck.playbackRate = 1.0;
+            deck.pause();
+          }
+        };
+        requestAnimationFrame(brakeStep);
+      } catch (e) {}
+    },
+
+    playRiserSweep(durationSec = 2.2) {
+      if (!this.isInitialized || !this.ctx) return;
+      try {
+        this.resume();
+        const sampleRate = this.ctx.sampleRate;
+        const length = sampleRate * durationSec;
+        const buffer = this.ctx.createBuffer(1, length, sampleRate);
+        const data = buffer.getChannelData(0);
+        let b0 = 0, b1 = 0, b2 = 0;
+        for (let i = 0; i < length; i++) {
+          const white = Math.random() * 2 - 1;
+          b0 = 0.99886 * b0 + white * 0.0555179;
+          b1 = 0.99332 * b1 + white * 0.0750759;
+          b2 = 0.96900 * b2 + white * 0.1538520;
+          data[i] = (b0 + b1 + b2 + white * 0.1) * 0.18;
+        }
+
+        const source = this.ctx.createBufferSource();
+        source.buffer = buffer;
+
+        const bandpass = this.ctx.createBiquadFilter();
+        bandpass.type = 'bandpass';
+        bandpass.Q.value = 3.2;
+
+        const gainNode = this.ctx.createGain();
+        const t = this.ctx.currentTime;
+
+        bandpass.frequency.setValueAtTime(320, t);
+        bandpass.frequency.exponentialRampToValueAtTime(3400, t + durationSec * 0.9);
+
+        gainNode.gain.setValueAtTime(0.001, t);
+        gainNode.gain.exponentialRampToValueAtTime(0.35, t + durationSec * 0.85);
+        gainNode.gain.linearRampToValueAtTime(0.001, t + durationSec);
+
+        source.connect(bandpass);
+        bandpass.connect(gainNode);
+        gainNode.connect(this.masterGain);
+
+        source.start(t);
+        source.stop(t + durationSec);
+      } catch (e) {}
+    }
+  };
+
+  // ==================== SMART HOOK & INTRO/OUTRO CUEING PLANNER ====================
+
+  function getGenreTransitionDuration(trackOrSong) {
+    if (!trackOrSong) return 5.5;
+    const genre = (trackOrSong.genre || resolveSongGenreForTransition(trackOrSong) || '').toLowerCase();
+    if (genre.includes('electronic') || genre.includes('edm') || genre.includes('dance') || genre.includes('house')) {
+      return 5.0; // Punchy club blend
+    }
+    if (genre.includes('hip-hop') || genre.includes('rap') || genre.includes('trap')) {
+      return 4.2; // Clean hip-hop drop
+    }
+    if (genre.includes('rock') || genre.includes('metal') || genre.includes('indie')) {
+      return 4.8; // Dynamic rock transition
+    }
+    if (genre.includes('chill') || genre.includes('lofi') || genre.includes('ambient') || genre.includes('classical') || genre.includes('soundtrack')) {
+      return 7.5; // Lush cinematic expansive fade
+    }
+    if (genre.includes('jazz') || genre.includes('acoustic') || genre.includes('r&b') || genre.includes('rnb') || genre.includes('soul')) {
+      return 6.0; // Silky studio transition
+    }
+    return 5.0;
+  }
+
+  /**
+   * Dynamically analyzes outgoing and incoming track profiles (genre, tempo feel, intro/outro lengths)
+   * to determine the optimal DJ blend style, cue jump offset, and sound effect transitions.
+   */
+  function planSmartTransition(outgoingTrack, incomingTrack, isManualSkip = false) {
+    const outGenre = (outgoingTrack && (outgoingTrack.genre || resolveSongGenreForTransition(outgoingTrack)) || '').toLowerCase();
+    const inGenre = (incomingTrack && (incomingTrack.genre || resolveSongGenreForTransition(incomingTrack)) || '').toLowerCase();
+
+    const isOutBeatDriven = outGenre.includes('elect') || outGenre.includes('edm') || outGenre.includes('dance') || outGenre.includes('house') || outGenre.includes('pop') || outGenre.includes('hip') || outGenre.includes('rap') || outGenre.includes('latin');
+    const isInBeatDriven = inGenre.includes('elect') || inGenre.includes('edm') || inGenre.includes('dance') || inGenre.includes('house') || inGenre.includes('pop') || inGenre.includes('hip') || inGenre.includes('rap') || inGenre.includes('latin');
+
+    let durationMs = 4800;
+    let cueOffset = 0.35; // Default: skip digital zero-padding at file start
+    let style = 'filter_swap'; // 'filter_swap' | 'echo_drop' | 'ambient_morph'
+    let triggerRiser = false;
+    let triggerVinylBrake = false;
+
+    if (isManualSkip) {
+      // Manual Next Track skip: punchy DJ cut with tape stop + dub echo
+      durationMs = 2400;
+      style = 'echo_drop';
+      triggerVinylBrake = true;
+      cueOffset = 0.45;
+    } else if (outGenre.includes('ambient') || outGenre.includes('lofi') || outGenre.includes('chill') || inGenre.includes('ambient') || inGenre.includes('lofi') || inGenre.includes('chill')) {
+      // Lush cinematic slow dissolve
+      durationMs = 7200;
+      style = 'ambient_morph';
+      cueOffset = 0.15;
+    } else if (isOutBeatDriven && isInBeatDriven) {
+      // Club DJ Low-End Swap (Clean Filter Sweep)
+      durationMs = 5000;
+      style = 'filter_swap';
+      cueOffset = 0.4;
+      // If incoming track is an extended mix with long intro build, trigger euphoric riser sweep
+      if (incomingTrack && ((incomingTrack.title || '').toLowerCase().includes('extended') || (incomingTrack.duration && incomingTrack.duration > 300))) {
+        triggerRiser = true;
+        cueOffset = 1.2;
+      }
+    } else {
+      // Genre mismatch or sudden tempo shift: Dub Echo tail bridges the energy gap
+      durationMs = 4200;
+      style = 'echo_drop';
+      triggerRiser = true;
+      cueOffset = 0.35;
+    }
+
+    return {
+      durationMs,
+      cueOffset,
+      style,
+      triggerRiser,
+      triggerVinylBrake
+    };
+  }
+
+  function getEffectiveAudioDuration() {
+    if (activeDeck && activeDeck.duration && isFinite(activeDeck.duration) && activeDeck.duration > 0) {
+      return activeDeck.duration;
+    }
+    const curTrackObj = isOnlineStreaming ? currentStreamingTrack : (currentSongIndex >= 0 ? librarySongs[currentSongIndex] : null);
+    if (curTrackObj && curTrackObj.duration && curTrackObj.duration > 0) {
+      return curTrackObj.duration;
+    }
+    return 0;
+  }
+
+  function peekNextTrack() {
+    if (repeatMode === 'one') {
+      if (isOnlineStreaming && currentStreamingTrack) {
+        return { type: 'online', track: currentStreamingTrack, queue: currentOnlineQueue, index: currentOnlineQueueIndex };
+      }
+      if (currentSongIndex >= 0 && librarySongs[currentSongIndex]) {
+        return { type: 'library', index: currentSongIndex, song: librarySongs[currentSongIndex] };
+      }
+      return null;
+    }
+
+    if (userPlayQueue && userPlayQueue.length > 0) {
+      return { type: 'queue', track: userPlayQueue[0] };
+    }
+
+    if (isOnlineStreaming) {
+      if (!currentOnlineQueue || !currentOnlineQueue.length) return null;
+      if (isShuffle) {
+        const pool = currentOnlineQueue.filter((_, i) => i !== currentOnlineQueueIndex);
+        const nextIdx = pool.length ? currentOnlineQueue.indexOf(pool[Math.floor(Math.random() * pool.length)]) : 0;
+        return { type: 'online', track: currentOnlineQueue[nextIdx], queue: currentOnlineQueue, index: nextIdx };
+      }
+      if (currentOnlineQueueIndex < currentOnlineQueue.length - 1) {
+        const nextIdx = currentOnlineQueueIndex + 1;
+        return { type: 'online', track: currentOnlineQueue[nextIdx], queue: currentOnlineQueue, index: nextIdx };
+      }
+      if (repeatMode === 'all' || transitionMode || currentOnlineQueue.length > 1) {
+        return { type: 'online', track: currentOnlineQueue[0], queue: currentOnlineQueue, index: 0 };
+      }
+      if (librarySongs && librarySongs.length > 0) {
+        return { type: 'library', index: 0, song: librarySongs[0] };
+      }
+      return { type: 'online', track: currentOnlineQueue[0], queue: currentOnlineQueue, index: 0 };
+    }
+
+    if (librarySongs && librarySongs.length > 0) {
+      if (isShuffle) {
+        if (!shuffleQueue.length || shuffleQueue.length !== librarySongs.length) {
+          generateShuffleQueue(currentSongIndex);
+        }
+        const nextPtr = shufflePointer + 1;
+        if (nextPtr < shuffleQueue.length) {
+          const nextIdx = shuffleQueue[nextPtr];
+          return { type: 'library', index: nextIdx, song: librarySongs[nextIdx] };
+        }
+        if (repeatMode === 'all' || transitionMode) {
+          return { type: 'library', index: shuffleQueue[0] || 0, song: librarySongs[shuffleQueue[0] || 0] };
+        }
+        return null;
+      }
+      if (currentSongIndex < librarySongs.length - 1) {
+        const nextIdx = currentSongIndex + 1;
+        return { type: 'library', index: nextIdx, song: librarySongs[nextIdx] };
+      }
+      if (repeatMode === 'all' || transitionMode) {
+        return { type: 'library', index: 0, song: librarySongs[0] };
+      }
+    }
+    return null;
+  }
+
+  function cancelCrossfade() {
+    if (!isCrossfading && !crossfadeAnimId) return;
+    if (crossfadeAnimId) {
+      cancelAnimationFrame(crossfadeAnimId);
+      crossfadeAnimId = null;
+    }
+    if (crossfadeOutgoingDeck) {
+      try {
+        crossfadeOutgoingDeck.pause();
+        crossfadeOutgoingDeck.currentTime = 0;
+        crossfadeOutgoingDeck.src = '';
+        crossfadeOutgoingDeck.volume = 0;
+        crossfadeOutgoingDeck.playbackRate = 1.0;
+      } catch (e) {}
+    }
+    if (activeDeck) {
+      try {
+        activeDeck.volume = currentMasterVolume;
+        activeDeck.playbackRate = 1.0;
+      } catch (e) {}
+    }
+    if (djAudioFx) djAudioFx.resetFilters();
+    isCrossfading = false;
+    crossfadeProgress = 0;
+    crossfadeOutgoingDeck = null;
+    crossfadeIncomingDeck = null;
+    [playerTransitionBtn, fsTransitionBtn].forEach(btn => {
+      if (btn) btn.classList.remove('crossfading');
+    });
+  }
+
+  let activeTransitionPlan = null;
+  function startCrossfadeAnimation(outgoingDeck, incomingDeck, durationOrPlan) {
+    if (crossfadeAnimId) cancelAnimationFrame(crossfadeAnimId);
+    isCrossfading = true;
+    crossfadeOutgoingDeck = outgoingDeck;
+    crossfadeIncomingDeck = incomingDeck;
+    crossfadeProgress = 0;
+
+    djAudioFx.init();
+    djAudioFx.resume();
+
+    const plan = (typeof durationOrPlan === 'object' && durationOrPlan !== null)
+      ? durationOrPlan
+      : { durationMs: Math.max(700, durationOrPlan || 4800), style: 'filter_swap', cueOffset: 0.35 };
+
+    activeTransitionPlan = plan;
+    const durationMs = plan.durationMs;
+    const durationSec = durationMs / 1000;
+
+    // Apply DJ FX based on transition plan
+    if (plan.style === 'filter_swap') {
+      djAudioFx.applyFilterSweep(outgoingDeck, incomingDeck, durationSec);
+    } else if (plan.style === 'echo_drop') {
+      djAudioFx.triggerEchoOut(outgoingDeck, 2.2);
+      if (plan.triggerVinylBrake) {
+        djAudioFx.triggerVinylBrake(outgoingDeck, 0.36);
+      }
+    }
+    if (plan.triggerRiser) {
+      djAudioFx.playRiserSweep(durationSec);
+    }
+
+    [playerTransitionBtn, fsTransitionBtn].forEach(btn => {
+      if (btn && transitionMode) {
+        btn.classList.add('crossfading');
+        btn.title = `Smart Transition: ${plan.style === 'filter_swap' ? 'DJ Filter Swap' : (plan.style === 'echo_drop' ? 'Echo-Out Drop' : 'Ambient Morph')} Active (T)`;
+      }
+    });
+
+    const startTime = performance.now();
+
+    function step(now) {
+      if (!isCrossfading) return;
+      const elapsed = now - startTime;
+      const t = Math.min(1, Math.max(0, elapsed / durationMs));
+      crossfadeProgress = t;
+
+      const outVol = currentMasterVolume * Math.cos(t * 0.5 * Math.PI);
+      const inVol = currentMasterVolume * Math.sin(t * 0.5 * Math.PI);
+
+      try {
+        if (!plan.triggerVinylBrake || t > 0.4) {
+          outgoingDeck.volume = Math.max(0, Math.min(1, outVol));
+        }
+        incomingDeck.volume = Math.max(0, Math.min(1, inVol));
+      } catch (e) {}
+
+      if (t < 1) {
+        crossfadeAnimId = requestAnimationFrame(step);
+      } else {
+        finishCrossfade(outgoingDeck, incomingDeck);
+      }
+    }
+
+    crossfadeAnimId = requestAnimationFrame(step);
+  }
+
+  function finishCrossfade(outgoingDeck, incomingDeck) {
+    if (crossfadeAnimId) cancelAnimationFrame(crossfadeAnimId);
+    crossfadeAnimId = null;
+    try {
+      outgoingDeck.pause();
+      outgoingDeck.currentTime = 0;
+      outgoingDeck.src = '';
+      outgoingDeck.volume = 0;
+      outgoingDeck.playbackRate = 1.0;
+    } catch (e) {}
+    try {
+      incomingDeck.volume = currentMasterVolume;
+      incomingDeck.playbackRate = 1.0;
+    } catch (e) {}
+    if (djAudioFx) djAudioFx.resetFilters();
+    isCrossfading = false;
+    crossfadeProgress = 0;
+    crossfadeOutgoingDeck = null;
+    crossfadeIncomingDeck = null;
+    hasTriggeredAutoCrossfade = false;
+    activeTransitionPlan = null;
+    [playerTransitionBtn, fsTransitionBtn].forEach(btn => {
+      if (btn) {
+        btn.classList.remove('crossfading');
+        btn.title = transitionMode
+          ? 'Smart Transition: ON — Dynamic hook cueing & DJ crossfade active (T)'
+          : 'Smart Transition: OFF — Click to enable (T)';
+      }
+    });
+    saveCurrentPlaybackState();
+  }
+
+  let isAutoCrossfadeInProgress = false;
+  function transitionToAudio(audioUrl, durationOrTrack, datasetMeta = null) {
+    const outgoingDeck = activeDeck;
+    const incomingDeck = standbyDeck;
+
+    const currentTrack = isOnlineStreaming ? currentStreamingTrack : (currentSongIndex >= 0 ? librarySongs[currentSongIndex] : null);
+    const incomingTrack = (durationOrTrack && typeof durationOrTrack === 'object') ? durationOrTrack : null;
+    const transitionPlan = planSmartTransition(currentTrack, incomingTrack, isManualTransitionRequested);
+    isManualTransitionRequested = false;
+    const isAutoCrossfade = isAutoCrossfadeInProgress;
+    isAutoCrossfadeInProgress = false;
+
+    const isCurrentlyPlayingAudio = (isPlaying || !activeDeck.paused || isAutoCrossfade) && activeDeck && activeDeck.src && activeDeck.currentTime > 0.4;
+
+    if (transitionMode && isCurrentlyPlayingAudio) {
+      cancelCrossfade();
+
+      if (datasetMeta) {
+        incomingDeck.dataset.streamMode = datasetMeta.streamMode || 'full';
+        if (datasetMeta.streamFullEndpoint) incomingDeck.dataset.streamFullEndpoint = datasetMeta.streamFullEndpoint;
+        else delete incomingDeck.dataset.streamFullEndpoint;
+        if (datasetMeta.streamQuery) incomingDeck.dataset.streamQuery = datasetMeta.streamQuery;
+        else delete incomingDeck.dataset.streamQuery;
+      } else {
+        incomingDeck.dataset.streamMode = 'full';
+        delete incomingDeck.dataset.streamFullEndpoint;
+        delete incomingDeck.dataset.streamQuery;
+      }
+
+      incomingDeck.src = audioUrl;
+      incomingDeck.volume = 0;
+      incomingDeck.currentTime = transitionPlan.cueOffset || 0.35; // Instant hook / silence skip!
+      incomingDeck.load();
+
+      // Swap deck pointers immediately so UI/scrubber binds to incoming track
+      activeDeck = incomingDeck;
+      standbyDeck = outgoingDeck;
+
+      const playPromise = incomingDeck.play();
+      if (playPromise !== undefined) {
+        playPromise.then(() => {
+          startCrossfadeAnimation(outgoingDeck, incomingDeck, transitionPlan);
+        }).catch((err) => {
+          console.warn('Playback on incoming deck failed:', err);
+          activeDeck = outgoingDeck;
+          standbyDeck = incomingDeck;
+          outgoingDeck.volume = currentMasterVolume;
+          updatePlayIcon(false);
+        });
+      } else {
+        startCrossfadeAnimation(outgoingDeck, incomingDeck, transitionPlan);
+      }
+    } else {
+      cancelCrossfade();
+      if (datasetMeta) {
+        activeDeck.dataset.streamMode = datasetMeta.streamMode || 'full';
+        if (datasetMeta.streamFullEndpoint) activeDeck.dataset.streamFullEndpoint = datasetMeta.streamFullEndpoint;
+        else delete activeDeck.dataset.streamFullEndpoint;
+        if (datasetMeta.streamQuery) activeDeck.dataset.streamQuery = datasetMeta.streamQuery;
+        else delete activeDeck.dataset.streamQuery;
+      } else {
+        activeDeck.dataset.streamMode = 'full';
+        delete activeDeck.dataset.streamFullEndpoint;
+        delete activeDeck.dataset.streamQuery;
+      }
+
+      activeDeck.src = audioUrl;
+      activeDeck.volume = currentMasterVolume;
+      activeDeck.currentTime = 0;
+      activeDeck.load();
+      const playPromise = activeDeck.play();
+      if (playPromise !== undefined) {
+        playPromise.catch(() => {
+          updatePlayIcon(false);
+        });
+      }
+    }
+  }
+
+  function updateTransitionBtnState() {
+    const label = transitionMode
+      ? 'Smart Transition: ON — Dynamic hook cueing, filter swap & echo FX active (T)'
+      : 'Smart Transition: OFF — Click to enable (T)';
+    [playerTransitionBtn, fsTransitionBtn].forEach(btn => {
+      if (!btn) return;
+      btn.classList.toggle('active', transitionMode);
+      btn.title = label;
+    });
+  }
+
+  function toggleTransitionMode() {
+    transitionMode = !transitionMode;
+    localStorage.setItem('musicstudio_transition', transitionMode);
+    updateTransitionBtnState();
+    if (transitionMode) {
+      djAudioFx.init();
+      djAudioFx.resume();
+      showToast('✨ Smart DJ Transition ON — Dynamic hook cueing, filter swap & echo FX active', 'success');
+      const currentSong = isOnlineStreaming
+        ? currentStreamingTrack
+        : (librarySongs[currentSongIndex] || null);
+      if (currentSong) applySmartTransition(currentSong);
+    } else {
+      showToast('Smart Transition OFF — Standard playback', 'info');
+      cancelCrossfade();
+      resetAmbientOrbs();
+    }
+  }
+
+  if (playerTransitionBtn) playerTransitionBtn.addEventListener('click', toggleTransitionMode);
+  if (fsTransitionBtn) fsTransitionBtn.addEventListener('click', toggleTransitionMode);
+  updateTransitionBtnState();
 
   // ==================== NAVIGATION TABS (DESKTOP + MOBILE) ====================
   function activateTab(target) {
@@ -1194,26 +2106,6 @@ document.addEventListener('DOMContentLoaded', () => {
         genreMap[g].push(song);
       });
 
-
-  function getGenreBadgeMeta(genre) {
-    const g = (genre || '').toLowerCase();
-    if (g.includes('pop')) return { icon: '🎤', bg: 'linear-gradient(135deg, #ec4899 0%, #8b5cf6 100%)', border: '#ec4899' };
-    if (g.includes('rock') || g.includes('metal') || g.includes('punk')) return { icon: '🎸', bg: 'linear-gradient(135deg, #ef4444 0%, #f97316 100%)', border: '#ef4444' };
-    if (g.includes('hip') || g.includes('rap') || g.includes('trap')) return { icon: '🎧', bg: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)', border: '#f59e0b' };
-    if (g.includes('elect') || g.includes('dance') || g.includes('house') || g.includes('edm') || g.includes('techno') || g.includes('club')) return { icon: '🎛️', bg: 'linear-gradient(135deg, #06b6d4 0%, #3b82f6 100%)', border: '#06b6d4' };
-    if (g.includes('classic') || g.includes('orchestr') || g.includes('piano') || g.includes('symphon')) return { icon: '🎻', bg: 'linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%)', border: '#8b5cf6' };
-    if (g.includes('jazz') || g.includes('blues') || g.includes('soul') || g.includes('funk')) return { icon: '🎷', bg: 'linear-gradient(135deg, #d97706 0%, #b45309 100%)', border: '#d97706' };
-    if (g.includes('r&b') || g.includes('rnb')) return { icon: '🎙️', bg: 'linear-gradient(135deg, #d946ef 0%, #c026d3 100%)', border: '#d946ef' };
-    if (g.includes('countr') || g.includes('folk') || g.includes('acoustic')) return { icon: '🪕', bg: 'linear-gradient(135deg, #f97316 0%, #ea580c 100%)', border: '#f97316' };
-    if (g.includes('reggae') || g.includes('dub') || g.includes('ska')) return { icon: '🌴', bg: 'linear-gradient(135deg, #10b981 0%, #eab308 100%)', border: '#10b981' };
-    if (g.includes('indie') || g.includes('alt')) return { icon: '🌿', bg: 'linear-gradient(135deg, #10b981 0%, #06b6d4 100%)', border: '#10b981' };
-    if (g.includes('latin') || g.includes('salsa') || g.includes('reggaeton')) return { icon: '💃', bg: 'linear-gradient(135deg, #f43f5e 0%, #e11d48 100%)', border: '#f43f5e' };
-    if (g.includes('bollywood') || g.includes('hindi') || g.includes('desi') || g.includes('punjabi') || g.includes('nepali')) return { icon: '🪘', bg: 'linear-gradient(135deg, #ea580c 0%, #c026d3 100%)', border: '#ea580c' };
-    if (g.includes('soundtrack') || g.includes('score') || g.includes('ost') || g.includes('movie')) return { icon: '🎬', bg: 'linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)', border: '#3b82f6' };
-    if (g.includes('chill') || g.includes('ambient') || g.includes('lofi') || g.includes('lo-fi')) return { icon: '🌌', bg: 'linear-gradient(135deg, #14b8a6 0%, #0f766e 100%)', border: '#14b8a6' };
-    if (g.includes('k-pop') || g.includes('j-pop') || g.includes('anime')) return { icon: '✨', bg: 'linear-gradient(135deg, #ec4899 0%, #06b6d4 100%)', border: '#ec4899' };
-    return { icon: '🎵', bg: 'linear-gradient(135deg, #6366f1 0%, #a855f7 100%)', border: '#6366f1' };
-  }
       const genres = Object.keys(genreMap).sort((a, b) => a.localeCompare(b));
       genres.forEach(genre => {
         const songs = genreMap[genre];
@@ -2079,6 +2971,7 @@ document.addEventListener('DOMContentLoaded', () => {
     currentStreamingTrack = track;
     hasRecordedPlayForCurrentTrack = false;
     hasPrefetchedNextTrack = false;
+    hasTriggeredAutoCrossfade = false;
 
     if (queue && queue.length) {
       currentOnlineQueue = queue;
@@ -2094,27 +2987,25 @@ document.addEventListener('DOMContentLoaded', () => {
     const totalSec = (track.duration && track.duration > 0) ? track.duration : 0;
 
     // Instant-Play Streaming Engine: If a high-bitrate preview stream is available, start playback immediately (<150ms)!
+    let streamMode = 'full';
+    let finalAudioUrl = streamEndpoint;
+    let streamFullEndpoint = null;
+    let streamQuery = null;
+
     if (track.preview_url && track.preview_url.startsWith('http')) {
-      audioEngine.dataset.streamMode = 'preview';
-      audioEngine.dataset.streamFullEndpoint = streamEndpoint;
-      audioEngine.dataset.streamQuery = query;
-      audioEngine.src = track.preview_url;
+      streamMode = 'preview';
+      finalAudioUrl = track.preview_url;
+      streamFullEndpoint = streamEndpoint;
+      streamQuery = query;
       // Concurrently prefetch and cache the full studio master stream in background
       fetch(resolveApiUrl(`/api/stream/prefetch?q=${encodeURIComponent(query)}`)).catch(() => {});
-    } else {
-      audioEngine.dataset.streamMode = 'full';
-      delete audioEngine.dataset.streamFullEndpoint;
-      delete audioEngine.dataset.streamQuery;
-      audioEngine.src = streamEndpoint;
     }
 
-    audioEngine.load();
-    const playPromise = audioEngine.play();
-    if (playPromise !== undefined) {
-      playPromise.catch(() => {
-        updatePlayIcon(false);
-      });
-    }
+    transitionToAudio(finalAudioUrl, track, {
+      streamMode,
+      streamFullEndpoint,
+      streamQuery
+    });
 
     // Update Dock
     playerCover.src = coverUrl;
@@ -2166,6 +3057,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     isPlaying = true;
+    applySmartTransition(track);
     updatePlayIcon(true);
     highlightPlayingRow();
     broadcastPlaybackState();
@@ -3344,6 +4236,7 @@ document.addEventListener('DOMContentLoaded', () => {
     currentStreamingTrack = null;
     currentSongIndex = idx;
     hasRecordedPlayForCurrentTrack = false;
+    hasTriggeredAutoCrossfade = false;
     playHistory.push(idx);
     if (playHistory.length > 100) playHistory.shift();
 
@@ -3379,14 +4272,7 @@ document.addEventListener('DOMContentLoaded', () => {
       coverUrl = resolveApiUrl(`/api/songs/artwork/${encodeURIComponent(song.filename)}`);
     }
 
-    audioEngine.src = audioUrl;
-    audioEngine.load();
-    const playPromise = audioEngine.play();
-    if (playPromise !== undefined) {
-      playPromise.catch(() => {
-        updatePlayIcon(false);
-      });
-    }
+    transitionToAudio(audioUrl, song);
 
     playerCover.src = coverUrl;
     playerTitle.textContent = song.title || 'Unknown Track';
@@ -3436,21 +4322,61 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     isPlaying = true;
+    applySmartTransition(song);
     updatePlayIcon(true);
     highlightPlayingRow();
   }
 
   function togglePlay() {
     if (!audioEngine.src) {
+      if (isOnlineStreaming && currentStreamingTrack) {
+        playOnlineTrack(currentStreamingTrack, currentOnlineQueue, currentOnlineQueueIndex);
+        return;
+      }
+      if (currentSongIndex >= 0 && librarySongs[currentSongIndex]) {
+        playTrack(currentSongIndex);
+        return;
+      }
       if (librarySongs.length > 0) {
         playTrack(0);
+        return;
       }
       return;
     }
     if (audioEngine.paused) {
-      audioEngine.play().catch(() => {});
-      isPlaying = true;
-      updatePlayIcon(true);
+      djAudioFx.init();
+      djAudioFx.resume();
+      const playPromise = audioEngine.play();
+      if (playPromise && typeof playPromise.then === 'function') {
+        playPromise.then(() => {
+          isPlaying = true;
+          updatePlayIcon(true);
+        }).catch((err) => {
+          console.warn('audioEngine.play() error or aborted, attempting recovery:', err);
+          if (isOnlineStreaming && currentStreamingTrack) {
+            playOnlineTrack(currentStreamingTrack, currentOnlineQueue, currentOnlineQueueIndex);
+          } else if (currentSongIndex >= 0 && librarySongs[currentSongIndex]) {
+            playTrack(currentSongIndex);
+          } else {
+            try {
+              audioEngine.load();
+              audioEngine.play().then(() => {
+                isPlaying = true;
+                updatePlayIcon(true);
+              }).catch(() => {
+                isPlaying = false;
+                updatePlayIcon(false);
+              });
+            } catch (e) {
+              isPlaying = false;
+              updatePlayIcon(false);
+            }
+          }
+        });
+      } else {
+        isPlaying = true;
+        updatePlayIcon(true);
+      }
     } else {
       audioEngine.pause();
       isPlaying = false;
@@ -3523,7 +4449,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (currentOnlineQueueIndex < currentOnlineQueue.length - 1) {
           const nextIdx = currentOnlineQueueIndex + 1;
           playOnlineTrack(currentOnlineQueue[nextIdx], currentOnlineQueue, nextIdx);
-        } else if (repeatMode === 'all') {
+        } else if (repeatMode === 'all' || transitionMode || currentOnlineQueue.length > 1) {
           playOnlineTrack(currentOnlineQueue[0], currentOnlineQueue, 0);
         } else {
           audioEngine.pause();
@@ -3543,7 +4469,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       shufflePointer++;
       if (shufflePointer >= shuffleQueue.length) {
-        if (repeatMode === 'all') {
+        if (repeatMode === 'all' || transitionMode) {
           generateShuffleQueue();
         } else {
           audioEngine.pause();
@@ -3558,7 +4484,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (currentSongIndex < librarySongs.length - 1) {
         playTrack(currentSongIndex + 1);
       } else {
-        if (repeatMode === 'all') {
+        if (repeatMode === 'all' || transitionMode) {
           playTrack(0);
         } else {
           audioEngine.pause();
@@ -3616,8 +4542,14 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   playerPlayBtn.addEventListener('click', togglePlay);
-  playerNext.addEventListener('click', playNextTrack);
-  playerPrev.addEventListener('click', playPrevTrack);
+  playerNext.addEventListener('click', () => {
+    isManualTransitionRequested = true;
+    playNextTrack();
+  });
+  playerPrev.addEventListener('click', () => {
+    isManualTransitionRequested = true;
+    playPrevTrack();
+  });
 
   if (playerShuffle) {
     playerShuffle.addEventListener('click', () => {
@@ -3817,14 +4749,17 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   audioEngine.addEventListener('timeupdate', () => {
-    if (!isSeeking && audioEngine.duration && isFinite(audioEngine.duration)) {
-      const pct = (audioEngine.currentTime / audioEngine.duration) * 100;
+    const curTrackObj = isOnlineStreaming ? currentStreamingTrack : (currentSongIndex >= 0 ? librarySongs[currentSongIndex] : null);
+    const effectiveDur = getEffectiveAudioDuration();
+
+    if (!isSeeking && effectiveDur > 0) {
+      const pct = Math.min(100, (activeDeck.currentTime / effectiveDur) * 100);
       playerScrubber.value = pct;
       updateScrubberFill(pct);
-    saveCurrentPlaybackState();
-      playerCurrentTime.textContent = formatSeconds(audioEngine.currentTime);
+      saveCurrentPlaybackState();
+      playerCurrentTime.textContent = formatSeconds(activeDeck.currentTime);
 
-      if (!hasRecordedPlayForCurrentTrack && audioEngine.currentTime >= 15) {
+      if (!hasRecordedPlayForCurrentTrack && activeDeck.currentTime >= 15) {
         hasRecordedPlayForCurrentTrack = true;
         recordActiveTrackPlay();
       }
@@ -3834,9 +4769,9 @@ document.addEventListener('DOMContentLoaded', () => {
         updateFsScrubberFill(pct);
       }
       if (fsCurrentTime) {
-        fsCurrentTime.textContent = formatSeconds(audioEngine.currentTime);
+        fsCurrentTime.textContent = formatSeconds(activeDeck.currentTime);
       }
-      updateNotchProgress(pct, audioEngine.currentTime);
+      updateNotchProgress(pct, activeDeck.currentTime);
       updateMediaSessionPosition();
 
       // Preview stream to full master stream handover
@@ -3852,7 +4787,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       // Intelligent zero-gap next-song prefetching (Prioritizing User Queue)
-      if (audioEngine.duration > 15 && !hasPrefetchedNextTrack && (audioEngine.currentTime / audioEngine.duration) >= 0.65) {
+      if (effectiveDur > 15 && !hasPrefetchedNextTrack && (activeDeck.currentTime / effectiveDur) >= 0.65) {
         hasPrefetchedNextTrack = true;
         let nextTrack = null;
         if (userPlayQueue && userPlayQueue.length > 0) {
@@ -3873,6 +4808,21 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }
 
+      // Smart Transition: DJ & Apple Music-Style Audio Crossfade Engine
+      if (transitionMode && !isCrossfading && !hasTriggeredAutoCrossfade && effectiveDur > 0) {
+        const nextItem = peekNextTrack();
+        const nextTrackObj = nextItem ? (nextItem.track || nextItem.song) : null;
+        const plan = planSmartTransition(curTrackObj, nextTrackObj, false);
+        const safeDuration = Math.min(plan.durationMs / 1000, Math.max(3.8, effectiveDur * 0.28));
+        const remainingTime = effectiveDur - activeDeck.currentTime;
+
+        if (remainingTime <= safeDuration && remainingTime > 0.2 && activeDeck.currentTime > 3) {
+          hasTriggeredAutoCrossfade = true;
+          isAutoCrossfadeInProgress = true;
+          playNextTrack();
+        }
+      }
+
       const now = Date.now();
       if (now - lastPlaybackBroadcast > 1000) {
         lastPlaybackBroadcast = now;
@@ -3882,20 +4832,22 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   audioEngine.addEventListener('loadedmetadata', () => {
-    if (audioEngine.duration && isFinite(audioEngine.duration)) {
-      playerTotalTime.textContent = formatSeconds(audioEngine.duration);
-      if (fsTotalTime) fsTotalTime.textContent = formatSeconds(audioEngine.duration);
-      if (notchTotalTime) notchTotalTime.textContent = formatSeconds(audioEngine.duration);
+    const dur = getEffectiveAudioDuration();
+    if (dur > 0) {
+      playerTotalTime.textContent = formatSeconds(dur);
+      if (fsTotalTime) fsTotalTime.textContent = formatSeconds(dur);
+      if (notchTotalTime) notchTotalTime.textContent = formatSeconds(dur);
       updateMediaSessionPosition();
       broadcastPlaybackState();
     }
   });
 
   audioEngine.addEventListener('durationchange', () => {
-    if (audioEngine.duration && isFinite(audioEngine.duration)) {
-      playerTotalTime.textContent = formatSeconds(audioEngine.duration);
-      if (fsTotalTime) fsTotalTime.textContent = formatSeconds(audioEngine.duration);
-      if (notchTotalTime) notchTotalTime.textContent = formatSeconds(audioEngine.duration);
+    const dur = getEffectiveAudioDuration();
+    if (dur > 0) {
+      playerTotalTime.textContent = formatSeconds(dur);
+      if (fsTotalTime) fsTotalTime.textContent = formatSeconds(dur);
+      if (notchTotalTime) notchTotalTime.textContent = formatSeconds(dur);
       updateMediaSessionPosition();
       broadcastPlaybackState();
     }
@@ -3925,6 +4877,11 @@ document.addEventListener('DOMContentLoaded', () => {
       audioEngine.play().catch(() => {});
       return;
     }
+    if (transitionMode && !isCrossfading) {
+      isAutoCrossfadeInProgress = true;
+      playNextTrack();
+      return;
+    }
     if (isOnlineStreaming) {
       playNextTrack();
     } else if (currentSongIndex >= 0 && librarySongs.length > 0) {
@@ -3940,6 +4897,19 @@ document.addEventListener('DOMContentLoaded', () => {
         updateFsScrubberFill(0);
       }
       if (fsCurrentTime) fsCurrentTime.textContent = '0:00';
+    }
+  });
+
+  audioEngine.addEventListener('error', (e) => {
+    console.warn('Audio playback engine encountered an error:', e);
+    if (isPlaying) {
+      if (isOnlineStreaming && currentStreamingTrack) {
+        console.log('Attempting online stream recovery upon error...');
+        playOnlineTrack(currentStreamingTrack, currentOnlineQueue, currentOnlineQueueIndex);
+      } else {
+        isPlaying = false;
+        updatePlayIcon(false);
+      }
     }
   });
 
@@ -3979,6 +4949,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function seekAudioTo(targetTime) {
     if (!audioEngine) return;
+    hasTriggeredAutoCrossfade = false;
+    if (isCrossfading) {
+      cancelCrossfade();
+    }
     if (isOnlineStreaming && audioEngine.dataset.streamMode === 'preview' && targetTime > 27.5 && audioEngine.dataset.streamFullEndpoint) {
       const fullUrl = audioEngine.dataset.streamFullEndpoint;
       audioEngine.dataset.streamMode = 'full';
@@ -3986,15 +4960,17 @@ document.addEventListener('DOMContentLoaded', () => {
       audioEngine.currentTime = targetTime;
       audioEngine.play().catch(() => {});
     } else {
-      const maxDur = (audioEngine.duration && isFinite(audioEngine.duration)) ? audioEngine.duration : 10000;
+      const effDur = getEffectiveAudioDuration();
+      const maxDur = effDur > 0 ? effDur : ((audioEngine.duration && isFinite(audioEngine.duration)) ? audioEngine.duration : 10000);
       audioEngine.currentTime = Math.max(0, Math.min(targetTime, maxDur - 0.2));
     }
   }
 
   playerScrubber.addEventListener('change', (e) => {
     const pct = parseFloat(e.target.value);
-    if (audioEngine.duration && isFinite(audioEngine.duration)) {
-      const targetTime = (pct / 100) * audioEngine.duration;
+    const dur = getEffectiveAudioDuration();
+    if (dur > 0) {
+      const targetTime = (pct / 100) * dur;
       seekAudioTo(targetTime);
     }
     setTimeout(() => {
@@ -4013,8 +4989,9 @@ document.addEventListener('DOMContentLoaded', () => {
       const pct = parseFloat(e.target.value);
       updateScrubberFill(pct);
       updateFsScrubberFill(pct);
-      if (audioEngine.duration && isFinite(audioEngine.duration)) {
-        const previewTime = (pct / 100) * audioEngine.duration;
+      const dur = getEffectiveAudioDuration();
+      if (dur > 0) {
+        const previewTime = (pct / 100) * dur;
         playerCurrentTime.textContent = formatSeconds(previewTime);
         if (fsCurrentTime) fsCurrentTime.textContent = formatSeconds(previewTime);
       }
@@ -4022,8 +4999,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     fsScrubber.addEventListener('change', (e) => {
       const pct = parseFloat(e.target.value);
-      if (audioEngine.duration && isFinite(audioEngine.duration)) {
-        const targetTime = (pct / 100) * audioEngine.duration;
+      const dur = getEffectiveAudioDuration();
+      if (dur > 0) {
+        const targetTime = (pct / 100) * dur;
         seekAudioTo(targetTime);
       }
       setTimeout(() => {
@@ -4115,8 +5093,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Fullscreen Player Controls
   if (fsPlay) fsPlay.addEventListener('click', togglePlay);
-  if (fsNext) fsNext.addEventListener('click', playNextTrack);
-  if (fsPrev) fsPrev.addEventListener('click', playPrevTrack);
+  if (fsNext) fsNext.addEventListener('click', () => {
+    isManualTransitionRequested = true;
+    playNextTrack();
+  });
+  if (fsPrev) fsPrev.addEventListener('click', () => {
+    isManualTransitionRequested = true;
+    playPrevTrack();
+  });
   if (fsShuffle) {
     fsShuffle.addEventListener('click', () => {
       if (playerShuffle) playerShuffle.click();
@@ -4300,6 +5284,8 @@ document.addEventListener('DOMContentLoaded', () => {
       if (playerShuffle) playerShuffle.click();
     } else if (e.key === 'r' || e.key === 'R') {
       if (playerRepeat) playerRepeat.click();
+    } else if (e.key === 't' || e.key === 'T') {
+      toggleTransitionMode();
     } else if (e.key === 'm' || e.key === 'M') {
       if (playerMuteBtn) playerMuteBtn.click();
     } else if (e.key === 'f' || e.key === 'F') {
@@ -4309,8 +5295,10 @@ document.addEventListener('DOMContentLoaded', () => {
         openFullscreenPlayer();
       }
     } else if (e.key === 'n' || e.key === 'N' || (e.shiftKey && e.code === 'ArrowRight')) {
+      isManualTransitionRequested = true;
       playNextTrack();
     } else if (e.key === 'p' || e.key === 'P' || (e.shiftKey && e.code === 'ArrowLeft')) {
+      isManualTransitionRequested = true;
       playPrevTrack();
     } else if (e.code === 'Escape') {
       if (fullscreenPlayer && fullscreenPlayer.classList.contains('active')) {
@@ -5129,6 +6117,12 @@ document.addEventListener('DOMContentLoaded', () => {
           highlightPlayingRow();
         }
         audioEngine.src = resolveApiUrl(`/api/songs/audio/${encodeURIComponent(data.filename)}`);
+      }
+
+      if (audioEngine.src) {
+        try {
+          audioEngine.load();
+        } catch (e) {}
       }
 
       // Reliably seek to exact position once audio metadata is available
