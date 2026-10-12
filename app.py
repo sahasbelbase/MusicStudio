@@ -1544,6 +1544,7 @@ def stream_file_with_range(filepath: str, request: Request, content_type: str = 
             "Accept-Ranges": "bytes",
             "Content-Length": str(chunk_size),
             "Content-Type": content_type,
+            "Access-Control-Allow-Origin": "*",
         }
         return StreamingResponse(
             iterfile(start, chunk_size),
@@ -1705,6 +1706,7 @@ def stream_audio_live(q: str, request: Request, background_tasks: BackgroundTask
         resp_headers = {
             'Content-Type': upstream.headers.get('Content-Type', content_type),
             'Accept-Ranges': 'bytes',
+            'Access-Control-Allow-Origin': '*',
         }
         if 'Content-Range' in upstream.headers:
             resp_headers['Content-Range'] = upstream.headers['Content-Range']

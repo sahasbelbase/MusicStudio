@@ -1502,6 +1502,87 @@ input[type="range"]:hover::-webkit-slider-thumb {
   width: 90px;
 }
 
+/* ==================== SMART TRANSITION BUTTON ==================== */
+.transition-toggle-btn {
+  position: relative;
+  color: var(--text-tertiary);
+  transition: var(--transition);
+}
+.transition-toggle-btn:hover {
+  color: var(--text-secondary);
+}
+.transition-toggle-btn.active {
+  color: var(--emerald) !important;
+  filter: drop-shadow(0 0 6px rgba(16, 185, 129, 0.55));
+  animation: transitionBtnPulse 2.8s infinite ease-in-out;
+}
+.transition-toggle-btn.crossfading {
+  color: #34d399 !important;
+  filter: drop-shadow(0 0 12px rgba(52, 211, 153, 0.95)) !important;
+  animation: transitionBtnCrossfading 0.7s infinite alternate ease-in-out !important;
+}
+@keyframes transitionBtnCrossfading {
+  0% { transform: scale(1) rotate(0deg); filter: drop-shadow(0 0 8px rgba(52, 211, 153, 0.6)); }
+  100% { transform: scale(1.18) rotate(12deg); filter: drop-shadow(0 0 18px rgba(52, 211, 153, 1)); }
+}
+@keyframes transitionBtnPulse {
+  0%, 100% { filter: drop-shadow(0 0 4px rgba(16, 185, 129, 0.45)); }
+  50%       { filter: drop-shadow(0 0 14px rgba(16, 185, 129, 0.95)); }
+}
+
+/* Fullscreen transition button inherits and overrides slightly */
+.fs-transition-btn.active {
+  color: var(--emerald) !important;
+}
+
+/* Cover crossfade animation (applied via JS on track change) */
+.dock-cover {
+  transition: opacity 0.38s ease, transform 0.38s ease;
+}
+.fs-cover-img {
+  transition: opacity 0.38s ease, transform 0.38s ease;
+}
+.dock-cover.cover-transitioning,
+.fs-cover-img.cover-transitioning {
+  opacity: 0;
+  transform: scale(0.96);
+}
+
+/* Smooth ambient orb color morphing (always ready) */
+.orb-emerald,
+.orb-violet,
+.orb-cyan {
+  transition: background 2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Fullscreen ambient glow enhanced color morphing */
+.fs-ambient-glow {
+  transition: background 1.8s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+/* Dock cover wrap — green pulse dot when Smart Transition is active */
+.dock-cover-wrap {
+  position: relative;
+}
+.dock-cover-wrap.transition-active::after {
+  content: '';
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 10px;
+  height: 10px;
+  background: var(--emerald);
+  border-radius: 50%;
+  border: 2px solid var(--bg-base);
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.8);
+  animation: transitionDotPulse 2s infinite ease-in-out;
+  z-index: 5;
+}
+@keyframes transitionDotPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.6; transform: scale(1.25); }
+}
+
 /* ==================== TOAST STACK ==================== */
 .toast-stack {
   position: fixed;
