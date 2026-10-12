@@ -31,6 +31,8 @@ from pydantic import BaseModel
 import mutagen
 from mutagen.id3 import ID3, TIT2, TPE1, TALB, TDRC, TCON, APIC, ID3NoHeaderError
 from mutagen.mp3 import MP3
+import updater
+updater.activate()
 import yt_dlp
 
 # Import extractor and download logic from download_playlist
@@ -47,6 +49,17 @@ import discovery
 from fix_metadata import process_file as enrich_single_file, fetch_itunes_metadata
 
 app = FastAPI(title="Music Studio")
+
+@app.on_event("startup")
+def _silent_engine_update():
+    """Keep yt-dlp current in the background; failures are ignored (the bundled copy still works)."""
+    def run():
+        try:
+            if updater.check().get("update_available"):
+                updater.update()
+        except Exception:
+            pass
+    Thread(target=run, daemon=True).start()
 
 app.add_middleware(
     CORSMiddleware,
@@ -1613,7 +1626,9 @@ def resolve_stream_url(query: str) -> dict:
         ydl_opts['ffmpeg_location'] = ffmpeg_loc
 
     search_query = query if query.startswith("http") else f"ytsearch1:{query}"
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    import yt_dlp as _ytdlp  # re-resolved so in-app updates take effect
+    ydl_opts['js_runtimes'] = updater.js_runtimes()
+    with _ytdlp.YoutubeDL(ydl_opts) as ydl:
         extracted = ydl.extract_info(search_query, download=False)
         entry = extracted['entries'][0] if 'entries' in extracted else extracted
         stream_url = entry.get('url')

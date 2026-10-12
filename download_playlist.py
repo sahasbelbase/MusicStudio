@@ -25,6 +25,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 from typing import List, Dict, Optional, Tuple
 
+import updater
+updater.activate()
 import mutagen
 from mutagen.id3 import ID3, TIT2, TPE1, TPE2, TALB, TDRC, TYER, TRCK, APIC, TPE4, TCON, ID3NoHeaderError
 
@@ -757,12 +759,14 @@ def download_single_track(
         'nocheckcertificate': True,
         'ignoreerrors': False,
         'noplaylist': True,
+        'js_runtimes': updater.js_runtimes(),
     }
 
     if cookies_browser:
         ydl_opts['cookiesfrombrowser'] = (cookies_browser,)
 
     max_retries = 3
+    auto_updated = False
     for attempt in range(1, max_retries + 1):
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -784,6 +788,12 @@ def download_single_track(
                 raise RuntimeError(f"FFmpeg conversion failed to produce {temp_mp3}")
                 
         except Exception as e:
+            # A stale yt-dlp is the usual cause of region/extraction failures: update once, then retry
+            if not auto_updated and _looks_like_extractor_failure(e):
+                auto_updated = True
+                if updater.update().get("ok"):
+                    import yt_dlp
+                    continue
             if attempt < max_retries:
                 time.sleep(1.5 * attempt)
             else:
@@ -796,6 +806,14 @@ def download_single_track(
                 return False, str(e), target_filename
 
     return False, "Max retries exceeded", target_filename
+
+def _looks_like_extractor_failure(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(k in msg for k in (
+        "sign in to confirm", "unable to extract", "http error 403", "http error 400",
+        "signature", "nsig", "player response", "requested format is not available",
+        "no video formats", "javascript runtime", "po token",
+    ))
 
 def run_downloader(
     url: str,
