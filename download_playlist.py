@@ -23,7 +23,7 @@ from ssl_helper import safe_urlopen
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
-from typing import List, Dict, Optional, Tuple
+from typing import Callable, List, Dict, Optional, Tuple
 
 import updater
 updater.activate()
@@ -741,9 +741,13 @@ def download_single_track(
     bitrate: str = "320k",
     naming_format: str = "title",
     cookies_browser: Optional[str] = None,
-    enriched_metadata: Dict = None
+    enriched_metadata: Dict = None,
+    should_stop: Optional[Callable[[], bool]] = None
 ) -> Tuple[bool, str, str]:
-    """Download a single track using yt-dlp, convert to MP3, and tag with ID3 metadata."""
+    """
+    Download a single track using yt-dlp, convert to MP3, and tag with ID3 metadata.
+    `should_stop` lets the caller abort a download that is already running (the Stop button).
+    """
     import yt_dlp
 
     artist = sanitize_filename(track_info.get('artist', 'Unknown Artist'))
@@ -804,6 +808,25 @@ def download_single_track(
     if cookies_browser:
         ydl_opts['cookiesfrombrowser'] = (cookies_browser,)
 
+    def stop_requested() -> bool:
+        return bool(should_stop and should_stop())
+
+    def abort_if_stopped(_progress):
+        if stop_requested():
+            raise yt_dlp.utils.DownloadCancelled("Stopped by user")
+
+    def remove_temp_files():
+        for f in os.listdir(output_folder):
+            if f.startswith(os.path.basename(temp_prefix)):
+                try:
+                    os.remove(os.path.join(output_folder, f))
+                except OSError:
+                    pass
+
+    if stop_requested():
+        return False, "cancelled", target_filename
+    ydl_opts['progress_hooks'] = [abort_if_stopped]
+
     max_retries = 3
     auto_updated = False
     for attempt in range(1, max_retries + 1):
@@ -827,6 +850,9 @@ def download_single_track(
                 raise RuntimeError(f"FFmpeg conversion failed to produce {temp_mp3}")
                 
         except Exception as e:
+            if stop_requested():
+                remove_temp_files()
+                return False, "cancelled", target_filename
             # Verify TLS by default; fall back to unverified only if this machine's CA store is the problem
             if _is_cert_error(e) and not ydl_opts.get('nocheckcertificate'):
                 ydl_opts['nocheckcertificate'] = True

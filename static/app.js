@@ -1689,7 +1689,10 @@ document.addEventListener('DOMContentLoaded', () => {
         throw new Error(err.detail || 'Download failed to start');
       }
 
-      showToast('Download started! Streaming tracks...', 'success');
+      const started = await res.json();
+      showToast(started.status === 'queued'
+        ? `Queued (#${started.position}) — starts when the current download finishes`
+        : 'Download started! Streaming tracks...', 'success');
       btnStop.style.display = 'inline-flex';
       statusBadge.className = 'hud-status-badge active-download';
       statusBadge.textContent = 'Downloading';
@@ -3348,7 +3351,10 @@ document.addEventListener('DOMContentLoaded', () => {
         throw new Error(err.detail || 'Download request failed');
       }
 
-      showToast(`Downloading: ${track.title}`, 'success');
+      const started = await res.json();
+      showToast(started.status === 'queued'
+        ? `Queued (#${started.position}): ${track.title}`
+        : `Downloading: ${track.title}`, 'success');
       if (statusBadge) {
         statusBadge.className = 'hud-status-badge active-download';
         statusBadge.textContent = 'Downloading';
@@ -4278,7 +4284,10 @@ document.addEventListener('DOMContentLoaded', () => {
         throw new Error(err.detail || 'Failed to start batch download');
       }
 
-      showToast(`Downloading "${playlistData.title}" (${playlistData.tracks.length} tracks)...`, 'success');
+      const started = await res.json();
+      showToast(started.status === 'queued'
+        ? `Queued (#${started.position}): "${playlistData.title}" starts when the current download finishes`
+        : `Downloading "${playlistData.title}" (${playlistData.tracks.length} tracks)...`, 'success');
       btnStop.style.display = 'inline-flex';
       statusBadge.className = 'hud-status-badge active-download';
       statusBadge.textContent = 'Downloading';

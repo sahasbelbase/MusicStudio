@@ -19,6 +19,7 @@ import urllib.parse
 from ssl_helper import safe_urlopen
 import subprocess
 import uuid
+import queue
 from threading import Thread, Lock
 from typing import Optional, List, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -350,6 +351,10 @@ def enrich_tracks_for_download(tracks: List[Dict], threads: int = 4) -> Dict[tup
         
         # Collect results
         for idx, future in enumerate(as_completed(futures), 1):
+            if state.should_stop:
+                for f in futures:
+                    f.cancel()
+                break
             cache_key, title, track_idx = futures[future]
             try:
                 enriched_data = future.result()
@@ -443,13 +448,16 @@ def run_download_worker(req: DownloadRequest):
                     req.quality,
                     req.naming,
                     None,  # cookies_browser
-                    enriched_cache.get((track.get('artist', 'Unknown Artist'), track.get('title', 'Unknown Title')))
+                    enriched_cache.get((track.get('artist', 'Unknown Artist'), track.get('title', 'Unknown Title'))),
+                    should_stop=lambda: state.should_stop,
                 ): track
                 for track in tracks
             }
 
             for future in as_completed(future_to_track):
                 if state.should_stop:
+                    for f in future_to_track:  # queued songs never start; running ones abort via should_stop
+                        f.cancel()
                     break
 
                 track = future_to_track[future]
@@ -578,7 +586,8 @@ def run_single_song_worker(req: SingleTrackDownloadRequest):
             req.quality,
             req.naming,
             None,
-            enriched
+            enriched,
+            should_stop=lambda: state.should_stop,
         )
 
         with state.lock:
@@ -656,13 +665,16 @@ def run_batch_songs_worker(req: BatchTracksDownloadRequest):
                 req.quality,
                 req.naming,
                 None,
-                enriched_cache.get((track.get('artist', 'Unknown Artist'), track.get('title', 'Unknown Title')))
+                enriched_cache.get((track.get('artist', 'Unknown Artist'), track.get('title', 'Unknown Title'))),
+                should_stop=lambda: state.should_stop,
             ): track
             for track in tracks
         }
 
         for future in as_completed(future_to_track):
             if state.should_stop:
+                for f in future_to_track:
+                    f.cancel()
                 break
 
             track = future_to_track[future]
@@ -736,6 +748,7 @@ def get_status():
             "percent": pct,
             "speed_songs_per_min": speed,
             "status_message": state.status_message,
+            "queued": list(_pending_labels),
             "recent_completed": state.recent_completed[:20]
         }
 
@@ -755,21 +768,61 @@ def app_update_open(req: OpenUrlPayload):
     webbrowser.open(req.url)
     return {"status": "opened"}
 
+# ==================== DOWNLOAD QUEUE ====================
+# Jobs share one progress display, so they run one at a time. A download requested while another is
+# running waits its turn instead of being rejected (that used to make every second download fail).
+_download_jobs: "queue.Queue" = queue.Queue()
+_pending_labels: List[str] = []
+_pending_lock = Lock()
+
+def _download_queue_loop():
+    while True:
+        label, worker, req = _download_jobs.get()
+        with _pending_lock:
+            if _pending_labels:
+                _pending_labels.pop(0)
+        try:
+            worker(req)
+        except Exception as e:
+            print(f"[Downloads] {label} failed: {e}")
+        finally:
+            with state.lock:
+                state.is_downloading = False
+
+Thread(target=_download_queue_loop, daemon=True, name="download-queue").start()
+
+def enqueue_download(label: str, worker, req) -> dict:
+    with _pending_lock:
+        waiting = state.is_downloading or bool(_pending_labels)
+        _pending_labels.append(label)
+        position = len(_pending_labels)
+        _download_jobs.put((label, worker, req))
+    if waiting:
+        state.notify("queued", {"title": label, "position": position})
+        return {"status": "queued", "position": position, "title": label}
+    return {"status": "started", "position": 0, "title": label}
+
 @app.post("/api/download/start")
-def start_download(req: DownloadRequest, background_tasks: BackgroundTasks):
-    if state.is_downloading:
-        raise HTTPException(status_code=400, detail="A download is already in progress.")
-    background_tasks.add_task(run_download_worker, req)
-    return {"status": "started", "url": req.url}
+def start_download(req: DownloadRequest):
+    return enqueue_download(req.url, run_download_worker, req)
 
 @app.post("/api/download/stop")
 def stop_download():
+    """Stops the running download and cancels everything waiting behind it."""
+    with _pending_lock:
+        cleared = len(_pending_labels)
+        while True:
+            try:
+                _download_jobs.get_nowait()
+            except queue.Empty:
+                break
+        _pending_labels.clear()
     if not state.is_downloading:
-        return {"status": "not_running"}
+        return {"status": "not_running", "cleared": cleared}
     with state.lock:
         state.should_stop = True
         state.status_message = "Stopping download workers..."
-    return {"status": "stopping"}
+    return {"status": "stopping", "cleared": cleared}
 
 @app.post("/api/enrich/start")
 def start_enrich(req: EnrichRequest, background_tasks: BackgroundTasks):
@@ -819,18 +872,14 @@ def search_explore(q: str, type: Optional[str] = "all"):
     }
 
 @app.post("/api/download/track")
-def download_single_track_route(req: SingleTrackDownloadRequest, background_tasks: BackgroundTasks):
-    if state.is_downloading:
-        raise HTTPException(status_code=400, detail="A download is already in progress.")
-    background_tasks.add_task(run_single_song_worker, req)
-    return {"status": "started", "title": req.title, "artist": req.artist}
+def download_single_track_route(req: SingleTrackDownloadRequest):
+    return enqueue_download(f"{req.artist} - {req.title}", run_single_song_worker, req)
 
 @app.post("/api/download/playlist-tracks")
-def download_batch_tracks_route(req: BatchTracksDownloadRequest, background_tasks: BackgroundTasks):
-    if state.is_downloading:
-        raise HTTPException(status_code=400, detail="A download is already in progress.")
-    background_tasks.add_task(run_batch_songs_worker, req)
-    return {"status": "started", "title": req.title, "count": len(req.tracks)}
+def download_batch_tracks_route(req: BatchTracksDownloadRequest):
+    res = enqueue_download(req.title, run_batch_songs_worker, req)
+    res["count"] = len(req.tracks)
+    return res
 
 # ==================== PLAY STATS & SMART PLAYLISTS ====================
 def record_play_stat(req: RecordPlayRequest) -> Dict:
