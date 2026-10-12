@@ -1014,7 +1014,7 @@
         </div>
 
         <div style="display: flex; align-items: center; gap: 8px;">
-          <button class="fs-icon-btn" id="fs-queue-btn" title="Open Play Queue">
+          <button class="fs-icon-btn fs-queue-labeled" id="fs-queue-btn" title="Queue: see what plays next">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="8" y1="6" x2="21" y2="6"/>
               <line x1="8" y1="12" x2="21" y2="12"/>
@@ -1023,6 +1023,7 @@
               <polyline points="3 12 4 13 6 11"/>
               <polyline points="3 18 4 19 6 17"/>
             </svg>
+            <span class="fs-queue-label">Queue</span>
           </button>
           <button class="fs-icon-btn" id="fs-drawer-btn" title="Track Inspector">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
@@ -1048,6 +1049,7 @@
           <h1 id="fs-title" class="fs-track-title truncate">Select a song to play</h1>
           <h2 id="fs-artist" class="fs-track-artist truncate">Music Studio</h2>
           <span id="fs-album" class="fs-track-album truncate">Local Master</span>
+          <button class="fs-up-next" id="fs-up-next" style="display: none;" title="Open queue"></button>
           <div class="fs-stream-actions" id="fs-stream-actions" style="display: none;">
             <button class="fs-save-btn" id="fs-save-btn" title="Download 320 kbps Master MP3 to Library">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2">

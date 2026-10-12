@@ -5238,6 +5238,8 @@ document.addEventListener('DOMContentLoaded', () => {
     fullscreenPlayer.style.display = 'flex';
     fullscreenPlayer.offsetHeight; // trigger CSS transition
     fullscreenPlayer.classList.add('active');
+    document.body.classList.add('fs-open');
+    updateFsUpNext();
     document.body.style.overflow = 'hidden';
 
     // Synchronize current track data
@@ -5265,6 +5267,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function closeFullscreenPlayer() {
     if (!fullscreenPlayer) return;
     fullscreenPlayer.classList.remove('active');
+    document.body.classList.remove('fs-open');
     document.body.style.overflow = '';
     setTimeout(() => {
       if (!fullscreenPlayer.classList.contains('active')) {
@@ -5736,6 +5739,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       localStorage.setItem('musicstudio_queue', JSON.stringify(userPlayQueue));
     } catch (e) {}
+    updateFsUpNext();
   }
 
   function addToQueue(track, playNextInLine = false) {
@@ -6014,7 +6018,24 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  // "Up next" line in the fullscreen player: the first user-queued song, otherwise what the context plays next
+  function updateFsUpNext() {
+    const el = document.getElementById('fs-up-next');
+    if (!el) return;
+    const next = peekNextTrack();
+    const t = next ? (next.track || next.song) : null;
+    if (!t || (repeatMode === 'one')) {
+      el.style.display = 'none';
+      return;
+    }
+    el.innerHTML = `<span class="fs-up-next-label">UP NEXT</span> ${escapeHtml(t.title || '')}${t.artist ? ' · ' + escapeHtml(t.artist) : ''}`;
+    el.style.display = 'inline-flex';
+  }
+  const fsUpNextEl = document.getElementById('fs-up-next');
+  if (fsUpNextEl) fsUpNextEl.addEventListener('click', () => toggleQueueDrawer(true));
+
   function refreshQueueDrawerIfOpen() {
+    updateFsUpNext();
     if (queueDrawer && queueDrawer.classList.contains('is-open')) renderQueueDrawer();
   }
 
