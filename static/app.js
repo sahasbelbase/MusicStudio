@@ -2643,35 +2643,44 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function executeDeleteSong(song) {
+    const songFilename = song.filename;
     try {
-      var songFilename = song.filename;
-      // If currently playing track is being deleted, stop audio
-      if (currentlyPlayingTrack && (currentlyPlayingTrack.filename === songFilename || currentlyPlayingTrack.title === song.title)) {
-        if (audioEngine) {
-          audioEngine.pause();
-          audioEngine.src = '';
-        }
-        currentlyPlayingTrack = null;
-        if (playerTrackTitle) playerTrackTitle.textContent = 'Select a track';
-        if (playerArtist) playerArtist.textContent = 'Music Studio';
-        if (playerPlayBtn) {
-          var svg = playerPlayBtn.querySelector('svg');
-          if (svg) svg.outerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
-        }
+      // Deleting the song that is playing: stop it first so the file is not held open (Windows refuses to delete it)
+      const playing = !isOnlineStreaming && currentSongIndex >= 0 ? librarySongs[currentSongIndex] : null;
+      if (playing && playing.filename === songFilename) {
+        cancelCrossfade();
+        audioEngine.pause();
+        activeDeck.removeAttribute('src');
+        activeDeck.load();
+        currentSongIndex = -1;
+        isPlaying = false;
+        updatePlayIcon(false);
+        playerTitle.textContent = 'Select a track to play';
+        playerArtist.textContent = 'Music Studio Engine';
+        playerCover.src = 'placeholder.svg';
+        if (fsTitle) fsTitle.textContent = 'Select a song to play';
+        if (fsArtist) fsArtist.textContent = 'Music Studio';
       }
 
-      var res = await fetch('/api/songs/' + encodeURIComponent(songFilename), {
-        method: 'DELETE'
-      });
-
+      const res = await fetch('/api/songs/' + encodeURIComponent(songFilename), { method: 'DELETE' });
       if (!res.ok) {
-        var err = await res.json().catch(function() { return {}; });
+        const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || 'Failed to delete track from disk');
       }
+
+      // Forget it everywhere it may still be referenced
+      const queued = userPlayQueue.length;
+      userPlayQueue = userPlayQueue.filter(t => t.filename !== songFilename);
+      if (userPlayQueue.length !== queued) updateQueueBadge();
+      try {
+        const last = JSON.parse(localStorage.getItem('musicstudio_last_played') || 'null');
+        if (last && last.filename === songFilename) localStorage.removeItem('musicstudio_last_played');
+      } catch (e) {}
 
       showToast('Deleted "' + (song.title || songFilename) + '" from library', 'success');
       closeDrawer();
       await loadLibrary();
+      refreshQueueDrawerIfOpen();
     } catch (err) {
       showToast(err.message || 'Error deleting track', 'error');
     }

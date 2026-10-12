@@ -1471,10 +1471,18 @@ def delete_song_file(filename: str):
     if not target_path:
         raise HTTPException(status_code=404, detail="Song file not found in library")
 
-    try:
-        os.remove(target_path)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to delete file from disk: {str(e)}")
+    # Windows refuses to delete a file that is still open (e.g. the player's last range request
+    # is finishing), so retry briefly before giving up.
+    for attempt in range(6):
+        try:
+            os.remove(target_path)
+            break
+        except PermissionError as e:
+            if attempt == 5:
+                raise HTTPException(status_code=409, detail="The song is still in use. Stop playback and try again.")
+            time.sleep(0.4)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to delete file from disk: {str(e)}")
 
     # Clean up from play stats if present
     try:
