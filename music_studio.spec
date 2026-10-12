@@ -125,8 +125,8 @@ if sys.platform == 'darwin':
         icon=os.path.join(BASE_DIR, 'MusicStudio.icns') if os.path.exists(os.path.join(BASE_DIR, 'MusicStudio.icns')) else None,
         bundle_identifier='com.musicstudio.app',
         info_plist={
-            'CFBundleShortVersionString': '3.4.0',
-            'CFBundleVersion': '3.4.0',
+            'CFBundleShortVersionString': '1.0.0',
+            'CFBundleVersion': '1.0.0',
             'NSHighResolutionCapable': 'True',
             'LSMinimumSystemVersion': '11.0',
             'NSHumanReadableCopyright': 'Copyright © 2026 Music Studio',

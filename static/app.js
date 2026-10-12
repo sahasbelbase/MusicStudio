@@ -4684,6 +4684,7 @@ document.addEventListener('DOMContentLoaded', () => {
       onlineShuffleList = null;
       generateShuffleQueue(currentSongIndex);
       updateShuffleUI();
+      onPlaybackOrderChanged();
       broadcastPlaybackState();
       showToast(isShuffle ? 'Shuffle: On' : 'Shuffle: Off', 'info');
     });
@@ -4728,6 +4729,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       localStorage.setItem('musicstudio_repeat', repeatMode);
       updateRepeatUI();
+      onPlaybackOrderChanged();
       const label = repeatMode === 'one' ? 'Repeat: Current Track' : (repeatMode === 'all' ? 'Repeat: All Tracks' : 'Repeat: Off');
       showToast(label, 'info');
     });
@@ -6053,6 +6055,13 @@ document.addEventListener('DOMContentLoaded', () => {
   const fsUpNextEl = document.getElementById('fs-up-next');
   if (fsUpNextEl) fsUpNextEl.addEventListener('click', () => toggleQueueDrawer(true));
 
+  // Shuffle/repeat changed what plays next: prefetch/measure the new next song and refresh "Up next" views
+  function onPlaybackOrderChanged() {
+    hasPrefetchedNextTrack = false;
+    silencePass = 0;
+    refreshQueueDrawerIfOpen();
+  }
+
   function refreshQueueDrawerIfOpen() {
     updateFsUpNext();
     if (queueDrawer && queueDrawer.classList.contains('is-open')) renderQueueDrawer();
@@ -6068,36 +6077,195 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
       queueDrawer.classList.remove('is-open');
       queueOverlay.classList.remove('is-open');
+      if (queueSearchInput && queueSearchInput.value) {
+        queueSearchInput.value = '';
+        runQueueSearch();
+      }
     }
   }
 
-  // ==================== APP UPDATE NOTICE ====================
-  async function checkForAppUpdate() {
-    if (isDeviceOffline) return;
+  // ==================== APP UPDATES ====================
+  // Checked when the app opens (and every 6h); a banner appears when GitHub has a newer release.
+  // Settings > App Updates shows the installed version and lets the user check on demand.
+  const appVersionLabel = document.getElementById('app-version-label');
+  const appUpdateStatus = document.getElementById('app-update-status');
+  const btnCheckAppUpdate = document.getElementById('btn-check-app-update');
+  const btnAppUpdateDownload = document.getElementById('btn-app-update-download');
+
+  function openAppUpdateDownload(info) {
+    fetch(resolveApiUrl('/api/app-update/open'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: info.url })
+    }).catch(() => window.open(info.url, '_blank'));
+  }
+
+  function renderAppUpdateCard(info) {
+    if (appVersionLabel) appVersionLabel.textContent = `Music Studio v${info.current}`;
+    if (!appUpdateStatus) return;
+    appUpdateStatus.classList.toggle('has-update', !!info.update_available);
+    if (info.update_available) {
+      appUpdateStatus.textContent = `Version ${info.latest} is available.`;
+      btnAppUpdateDownload.textContent = `Download v${info.latest}`;
+      btnAppUpdateDownload.style.display = 'inline-flex';
+      btnAppUpdateDownload.onclick = () => openAppUpdateDownload(info);
+    } else {
+      btnAppUpdateDownload.style.display = 'none';
+      appUpdateStatus.textContent = info.error === 'offline'
+        ? "Couldn't reach the update server. Check your connection."
+        : info.error === 'no_release'
+          ? "You're on the latest version (no newer release published)."
+          : info.error
+            ? `Couldn't check for updates (${info.error}).`
+            : "You're on the latest version.";
+    }
+  }
+
+  function showAppUpdateBanner(info) {
+    if (localStorage.getItem('musicstudio_dismissed_update') === info.latest) return;
+    let bar = document.getElementById('app-update-bar');
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'app-update-bar';
+      document.body.appendChild(bar);
+    }
+    bar.innerHTML = `<span>🎉 Music Studio <b>v${escapeHtml(info.latest)}</b> is available <span class="app-update-cur">(you have v${escapeHtml(info.current)})</span></span>
+      <button class="app-update-go">Download</button><button class="app-update-x" title="Dismiss">&times;</button>`;
+    bar.querySelector('.app-update-go').onclick = () => openAppUpdateDownload(info);
+    bar.querySelector('.app-update-x').onclick = () => {
+      localStorage.setItem('musicstudio_dismissed_update', info.latest);
+      bar.remove();
+    };
+  }
+
+  async function checkForAppUpdate(manual = false) {
+    if (isDeviceOffline && !manual) return;
+    if (manual && btnCheckAppUpdate) {
+      btnCheckAppUpdate.disabled = true;
+      btnCheckAppUpdate.textContent = 'Checking...';
+    }
     try {
       const info = await (await fetch(resolveApiUrl('/api/app-update'))).json();
-      if (!info.update_available || localStorage.getItem('musicstudio_dismissed_update') === info.latest) return;
-      let bar = document.getElementById('app-update-bar');
-      if (!bar) {
-        bar = document.createElement('div');
-        bar.id = 'app-update-bar';
-        document.body.appendChild(bar);
+      renderAppUpdateCard(info);
+      if (info.update_available) {
+        if (manual) localStorage.removeItem('musicstudio_dismissed_update');
+        showAppUpdateBanner(info);
+      } else if (manual) {
+        showToast(info.error && info.error !== 'no_release' ? "Couldn't check for updates" : "You're on the latest version", info.error && info.error !== 'no_release' ? 'warning' : 'success');
       }
-      bar.innerHTML = `<span>🎉 Music Studio <b>v${escapeHtml(info.latest)}</b> is available <span class="app-update-cur">(you have v${escapeHtml(info.current)})</span></span>
-        <button class="app-update-go">Download</button><button class="app-update-x" title="Dismiss">&times;</button>`;
-      bar.querySelector('.app-update-go').onclick = () => {
-        fetch(resolveApiUrl('/api/app-update/open'), {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: info.url })
-        }).catch(() => window.open(info.url, '_blank'));
-      };
-      bar.querySelector('.app-update-x').onclick = () => {
-        localStorage.setItem('musicstudio_dismissed_update', info.latest);
-        bar.remove();
-      };
-    } catch (e) {}
+    } catch (e) {
+      if (manual) renderAppUpdateCard({ current: '', error: 'offline' });
+    } finally {
+      if (manual && btnCheckAppUpdate) {
+        btnCheckAppUpdate.disabled = false;
+        btnCheckAppUpdate.textContent = 'Check for Updates';
+      }
+    }
   }
+  if (btnCheckAppUpdate) btnCheckAppUpdate.addEventListener('click', () => checkForAppUpdate(true));
   setTimeout(checkForAppUpdate, 4000);
   setInterval(checkForAppUpdate, 6 * 60 * 60 * 1000);
+
+  // ==================== QUEUE SEARCH: find songs in the library or online and queue them ====================
+  const queueSearchInput = document.getElementById('queue-search');
+  const queueSearchClear = document.getElementById('queue-search-clear');
+  const queueSearchResults = document.getElementById('queue-search-results');
+  const queueBodyEl = queueDrawer ? queueDrawer.querySelector('.queue-body') : null;
+  const QUEUE_ICON_PLAY_NEXT = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="17 11 12 6 7 11"/><line x1="12" y1="6" x2="12" y2="18"/></svg>`;
+  const QUEUE_ICON_CHECK = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.6"><polyline points="20 6 9 17 4 12"/></svg>`;
+  let queueSearchTimer = null;
+  let queueSearchSeq = 0;
+
+  function queueSearchRow(track, isOnline) {
+    const row = document.createElement('div');
+    row.className = 'queue-item';
+    const cover = track.cover_url || (track.filename ? resolveApiUrl(`/api/songs/artwork/${encodeURIComponent(track.filename)}`) : 'placeholder.svg');
+    row.innerHTML = `
+      <img src="${escapeHtml(cover)}" onerror="this.src='placeholder.svg'" class="queue-item-thumb" draggable="false" />
+      <div class="queue-item-info" title="Play now">
+        <div class="queue-item-title truncate">${escapeHtml(track.title)}</div>
+        <div class="queue-item-artist truncate">${escapeHtml(track.artist)}${isOnline ? ' · <span class="queue-online-tag">Online</span>' : ''}</div>
+      </div>
+      <button class="queue-search-btn" data-next="1" title="Play next">${QUEUE_ICON_PLAY_NEXT}</button>
+      <button class="queue-search-btn" title="Add to end of queue">${QUEUE_ICON_PLUS}</button>`;
+    const item = isOnline ? { ...track, is_online: true } : track;
+    row.querySelector('.queue-item-info').addEventListener('click', () => playQueueTrack(item));
+    row.querySelectorAll('.queue-search-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        addToQueue(item, btn.dataset.next === '1');
+        btn.classList.add('done');
+        btn.innerHTML = QUEUE_ICON_CHECK;
+      });
+    });
+    return row;
+  }
+
+  function queueSearchSection(label) {
+    const wrap = document.createElement('div');
+    wrap.className = 'queue-section';
+    wrap.innerHTML = `<div class="queue-section-header">${label}</div><div class="queue-list"></div>`;
+    queueSearchResults.appendChild(wrap);
+    return wrap.querySelector('.queue-list');
+  }
+
+  function queueSearchMessage(list, text) {
+    list.innerHTML = `<div class="queue-empty-msg">${text}</div>`;
+  }
+
+  function runQueueSearch() {
+    if (!queueSearchInput || !queueSearchResults) return;
+    const raw = queueSearchInput.value.trim();
+    const q = raw.toLowerCase();
+    queueSearchClear.style.display = raw ? 'block' : 'none';
+    if (queueBodyEl) queueBodyEl.classList.toggle('is-searching', !!q);
+    clearTimeout(queueSearchTimer);
+    const seq = ++queueSearchSeq;
+    queueSearchResults.innerHTML = '';
+    if (!q) return;
+
+    const libList = queueSearchSection('IN YOUR LIBRARY');
+    const local = (rawLibrarySongs || []).filter(s =>
+      (s.title || '').toLowerCase().includes(q) ||
+      (s.artist || '').toLowerCase().includes(q) ||
+      (s.album || '').toLowerCase().includes(q)
+    ).slice(0, 8);
+    if (local.length) local.forEach(t => libList.appendChild(queueSearchRow(t, false)));
+    else queueSearchMessage(libList, 'No matches in your library');
+
+    const onlineList = queueSearchSection('ONLINE');
+    if (isDeviceOffline) {
+      queueSearchMessage(onlineList, 'Offline: online search unavailable');
+      return;
+    }
+    queueSearchMessage(onlineList, 'Searching...');
+    queueSearchTimer = setTimeout(async () => {
+      try {
+        const data = await (await fetch(`/api/explore/search?type=tracks&q=${encodeURIComponent(raw)}`)).json();
+        if (seq !== queueSearchSeq) return; // a newer search started meanwhile
+        const tracks = (data.tracks || []).filter(t => !findLocalLibraryMatch(t)).slice(0, 8);
+        onlineList.innerHTML = '';
+        if (tracks.length) tracks.forEach(t => onlineList.appendChild(queueSearchRow(t, true)));
+        else queueSearchMessage(onlineList, 'No online results');
+      } catch (e) {
+        if (seq === queueSearchSeq) queueSearchMessage(onlineList, 'Online search unavailable');
+      }
+    }, 350);
+  }
+
+  if (queueSearchInput) {
+    queueSearchInput.addEventListener('input', runQueueSearch);
+    queueSearchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && queueSearchInput.value) {
+        e.stopPropagation();
+        queueSearchInput.value = '';
+        runQueueSearch();
+      }
+    });
+    queueSearchClear.addEventListener('click', () => {
+      queueSearchInput.value = '';
+      runQueueSearch();
+      queueSearchInput.focus();
+    });
+  }
 
   // ==================== STATE PERSISTENCE LOGIC ====================
   let lastStateSaveTime = 0;
@@ -6350,6 +6518,7 @@ document.addEventListener('DOMContentLoaded', () => {
       onlineShuffleList = null;
       generateShuffleQueue(currentSongIndex);
       updateShuffleUI();
+      onPlaybackOrderChanged();
       broadcastPlaybackState();
       showToast(isShuffle ? 'Shuffle: On' : 'Shuffle: Off', 'info');
     }

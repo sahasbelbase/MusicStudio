@@ -12,9 +12,13 @@ import importlib
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 import threading
 import zipfile
 
@@ -134,21 +138,44 @@ def _ver_tuple(v: str) -> tuple:
     return tuple(int(p) for p in v.lstrip("vV").split(".") if p.isdigit())
 
 
-def check_app_update() -> dict:
-    """Look for a newer Music Studio release on GitHub and pick the download for this OS."""
-    out = {"current": APP_VERSION, "latest": None, "update_available": False, "url": None, "notes": ""}
+def _url_exists(url: str) -> bool:
     try:
-        with safe_urlopen(f"https://api.github.com/repos/{APP_REPO}/releases/latest", timeout=15) as r:
-            rel = json.loads(r.read().decode())
-        latest = rel.get("tag_name", "")
-        want = ".dmg" if sys.platform == "darwin" else ("setup.exe" if sys.platform == "win32" else None)
-        asset = next((a for a in rel.get("assets", []) if want and a["name"].lower().endswith(want)), None)
-        out.update(
-            latest=latest.lstrip("vV"),
-            update_available=_ver_tuple(latest) > _ver_tuple(APP_VERSION),
-            url=asset["browser_download_url"] if asset else rel.get("html_url"),
-            notes=(rel.get("body") or "")[:600],
-        )
+        with safe_urlopen(urllib.request.Request(url, method="HEAD"), timeout=15) as r:
+            return r.status < 400
     except Exception:
-        pass  # offline, rate-limited, or no release yet: stay quiet
+        return False
+
+
+def check_app_update() -> dict:
+    """
+    Look for a newer Music Studio release on GitHub and pick the download for this OS.
+
+    Reads the public redirect github.com/<repo>/releases/latest -> .../releases/tag/vX.Y.Z instead of
+    the REST API, whose anonymous limit (60 requests/hour per network) is easy to hit.
+    """
+    out = {"current": APP_VERSION, "latest": None, "update_available": False, "url": None, "error": None}
+    try:
+        with safe_urlopen(f"https://github.com/{APP_REPO}/releases/latest", timeout=15) as r:
+            final_url = r.geturl()
+    except urllib.error.HTTPError as e:
+        out["error"] = "no_release" if e.code == 404 else f"GitHub returned HTTP {e.code}"
+        return out
+    except Exception:
+        out["error"] = "offline"
+        return out
+
+    m = re.search(r"/releases/tag/([^/?#]+)", final_url)
+    if not m:
+        out["error"] = "no_release"  # GitHub sends us to the release list when nothing is published
+        return out
+    tag = urllib.parse.unquote(m.group(1))
+    out["latest"] = tag.lstrip("vV")
+    out["update_available"] = _ver_tuple(tag) > _ver_tuple(APP_VERSION)
+    out["url"] = f"https://github.com/{APP_REPO}/releases/tag/{tag}"
+    if out["update_available"]:
+        # Asset names come from .github/workflows/build_releases.yml
+        asset = {"darwin": "MusicStudio-Installer.dmg", "win32": "MusicStudio-Setup.exe"}.get(sys.platform)
+        direct = f"https://github.com/{APP_REPO}/releases/download/{tag}/{asset}" if asset else None
+        if direct and _url_exists(direct):
+            out["url"] = direct
     return out

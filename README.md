@@ -174,6 +174,14 @@ MusicDownloder/
 
 ---
 
+## 🚢 Releasing a New Version
+
+1. Push a version tag: `git tag v1.0.1 && git push origin v1.0.1`
+2. GitHub Actions stamps that version into the app, builds the macOS `.dmg` and the Windows installer, and attaches them to a GitHub release.
+3. Installed copies check for the newer release every time they open and show an update banner. Users can also check any time in **Settings → App Updates**.
+
+---
+
 ## 📄 License
 
 This project is licensed under the MIT License.

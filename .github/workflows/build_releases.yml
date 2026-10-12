@@ -16,6 +16,10 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Stamp version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python scripts/stamp_version.py
+
       - name: Install dependencies
         run: |
           brew install ffmpeg
@@ -41,6 +45,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+      - name: Stamp version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python scripts/stamp_version.py
 
       - name: Install FFmpeg and NSIS
         run: choco install ffmpeg nsis -y

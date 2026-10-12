@@ -5743,3 +5743,54 @@ body.fs-open .modal-root { z-index: 2000; }
     margin-bottom: min(30px, 3vh);
   }
 }
+
+/* Settings > App Updates */
+.app-update-status {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+.app-update-status.has-update {
+  color: var(--accent-emerald, #10b981);
+  font-weight: 600;
+}
+.app-update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.app-update-actions button { white-space: nowrap; }
+
+/* Queue drawer search */
+.queue-search {
+  padding: 14px 20px 0;
+}
+.queue-search-wrap {
+  max-width: none;
+  padding: 9px 14px;
+}
+.queue-body.is-searching > .queue-section { display: none; }
+.queue-search-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: var(--transition);
+}
+.queue-search-btn:hover {
+  color: var(--accent-emerald, #10b981);
+  border-color: rgba(16, 185, 129, 0.45);
+  background: rgba(16, 185, 129, 0.1);
+}
+.queue-search-btn.done {
+  color: var(--accent-emerald, #10b981);
+  border-color: rgba(16, 185, 129, 0.45);
+}
+.queue-online-tag { color: var(--accent-emerald, #10b981); }
