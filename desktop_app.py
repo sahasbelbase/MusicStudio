@@ -277,6 +277,81 @@ def wait_for_server(port, timeout=10):
         time.sleep(0.1)
     return False
 
+def set_windows_relaunch_properties(hwnd):
+    """
+    Make taskbar pinning use Music Studio's own icon and launcher instead of python(w).exe.
+
+    When the app runs as pythonw.exe, "Pin to taskbar" would otherwise pin the Python
+    interpreter (with the Python logo). Setting the AppUserModel relaunch properties on the
+    window tells Explorer which command and icon to store in the pinned shortcut.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("Data1", ctypes.c_ulong), ("Data2", ctypes.c_ushort),
+                    ("Data3", ctypes.c_ushort), ("Data4", ctypes.c_ubyte * 8)]
+
+    class PROPERTYKEY(ctypes.Structure):
+        _fields_ = [("fmtid", GUID), ("pid", wintypes.DWORD)]
+
+    class PROPVARIANT(ctypes.Structure):
+        _fields_ = [("vt", ctypes.c_ushort), ("r1", ctypes.c_ushort), ("r2", ctypes.c_ushort),
+                    ("r3", ctypes.c_ushort), ("pwszVal", ctypes.c_void_p), ("pad", ctypes.c_void_p)]
+
+    ole32 = ctypes.windll.ole32
+    shell32 = ctypes.windll.shell32
+
+    def make_guid(text):
+        g = GUID()
+        ole32.CLSIDFromString(ctypes.c_wchar_p(text), ctypes.byref(g))
+        return g
+
+    app_model = make_guid("{9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}")
+    iid_store = make_guid("{886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99}")  # IPropertyStore
+
+    shell32.SHGetPropertyStoreForWindow.argtypes = [wintypes.HWND, ctypes.POINTER(GUID), ctypes.POINTER(ctypes.c_void_p)]
+    store_ptr = ctypes.c_void_p()
+    if shell32.SHGetPropertyStoreForWindow(hwnd, ctypes.byref(iid_store), ctypes.byref(store_ptr)) != 0 or not store_ptr:
+        return
+
+    # IPropertyStore vtable: 0-2 IUnknown, 3 GetCount, 4 GetAt, 5 GetValue, 6 SetValue, 7 Commit
+    vtable = ctypes.cast(ctypes.cast(store_ptr, ctypes.POINTER(ctypes.c_void_p))[0], ctypes.POINTER(ctypes.c_void_p))
+    SetValue = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.POINTER(PROPERTYKEY), ctypes.POINTER(PROPVARIANT))(vtable[6])
+    Commit = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p)(vtable[7])
+    Release = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(vtable[2])
+
+    if getattr(sys, "frozen", False):
+        launcher = sys.executable
+    else:
+        launcher = os.path.join(BASE_DIR, "MusicStudio.exe")
+        if not os.path.isfile(launcher):
+            launcher = ""
+    icon = os.path.join(BASE_DIR, "MusicStudio.ico")
+    if not os.path.isfile(icon):
+        icon = launcher
+
+    props = [(5, "com.musicstudio.app")]  # AppUserModel.ID
+    if launcher:
+        props += [(2, f'"{launcher}"'),                 # RelaunchCommand
+                  (3, f"{icon},0"),                     # RelaunchIconResource
+                  (4, "Music Studio")]                  # RelaunchDisplayNameResource
+
+    keep_alive = []
+    try:
+        for pid, text in props:
+            buf = ctypes.create_unicode_buffer(text)
+            keep_alive.append(buf)
+            pv = PROPVARIANT()
+            pv.vt = 31  # VT_LPWSTR
+            pv.pwszVal = ctypes.cast(buf, ctypes.c_void_p).value
+            key = PROPERTYKEY(app_model, pid)
+            SetValue(store_ptr, ctypes.byref(key), ctypes.byref(pv))
+        Commit(store_ptr)
+    finally:
+        Release(store_ptr)
+
+
 def set_windows_taskbar_icon(window=None):
     """Explicitly assign 32x32 and 16x16 icon to the Windows HWND and window class."""
     if sys.platform != "win32":
@@ -307,6 +382,11 @@ def set_windows_taskbar_icon(window=None):
                 set_windows_taskbar_icon(window)
             threading.Thread(target=_retry, daemon=True).start()
             return
+
+        try:
+            set_windows_relaunch_properties(hwnd)
+        except Exception as e:
+            print(f"[DesktopApp] Taskbar pin properties notice: {e}")
 
         IMAGE_ICON = 1
         LR_LOADFROMFILE = 0x00000010

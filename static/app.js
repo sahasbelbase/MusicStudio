@@ -442,7 +442,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let selectedSong = null;
   let searchDebounce = null;
   let previousVolume = parseFloat(localStorage.getItem('musicstudio_volume') || localStorage.getItem('spotistudio_volume')) || 0.8;
-  let transitionMode = localStorage.getItem('musicstudio_transition') === 'true'; // Smart Transition: OFF by default
+  let transitionMode = localStorage.getItem('musicstudio_transition') !== 'false'; // Smart Transition: ON by default, remembers the user's choice
 
   // Platform Icons SVG
   const ICONS = {
@@ -946,8 +946,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (isOnlineStreaming) {
       if (!currentOnlineQueue || !currentOnlineQueue.length) return null;
       if (isShuffle) {
-        const pool = currentOnlineQueue.filter((_, i) => i !== currentOnlineQueueIndex);
-        const nextIdx = pool.length ? currentOnlineQueue.indexOf(pool[Math.floor(Math.random() * pool.length)]) : 0;
+        const nextIdx = ensureOnlineShuffleList()[0];
         return { type: 'online', track: currentOnlineQueue[nextIdx], queue: currentOnlineQueue, index: nextIdx };
       }
       if (currentOnlineQueueIndex < currentOnlineQueue.length - 1) {
@@ -1150,8 +1149,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
       incomingDeck.src = audioUrl;
       incomingDeck.volume = 0;
-      incomingDeck.currentTime = transitionPlan.cueOffset || 0.35; // Instant hook / silence skip!
       incomingDeck.load();
+      // currentTime set before load() is discarded, so skip the silent lead-in once metadata is ready
+      const cueOffset = transitionPlan.cueOffset || 0.35;
+      incomingDeck.addEventListener('loadedmetadata', () => {
+        try { if (incomingDeck.currentTime < cueOffset) incomingDeck.currentTime = cueOffset; } catch (e) {}
+      }, { once: true });
 
       // Swap deck pointers immediately so UI/scrubber binds to incoming track
       activeDeck = incomingDeck;
@@ -2743,6 +2746,22 @@ document.addEventListener('DOMContentLoaded', () => {
   let isOnlineStreaming = false;
   let currentOnlineQueue = [];
   let currentOnlineQueueIndex = -1;
+  let onlineQueueSource = null;   // the caller's array that currentOnlineQueue was copied from
+  let onlineShuffleList = null;   // upcoming queue indices while shuffling (editable from the queue drawer)
+
+  // Upcoming online indices in shuffle order, rebuilt whenever the list is stale or used up.
+  function ensureOnlineShuffleList() {
+    const valid = onlineShuffleList && onlineShuffleList.every(i => i >= 0 && i < currentOnlineQueue.length);
+    if (!valid || onlineShuffleList.length === 0) {
+      const idxs = currentOnlineQueue.map((_, i) => i).filter(i => i !== currentOnlineQueueIndex);
+      for (let i = idxs.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [idxs[i], idxs[j]] = [idxs[j], idxs[i]];
+      }
+      onlineShuffleList = idxs.length ? idxs : (currentOnlineQueue.length ? [0] : []);
+    }
+    return onlineShuffleList;
+  }
   let hasPrefetchedNextTrack = false;
 
   function normalizeSongString(str) {
@@ -2974,11 +2993,18 @@ document.addEventListener('DOMContentLoaded', () => {
     hasTriggeredAutoCrossfade = false;
 
     if (queue && queue.length) {
-      currentOnlineQueue = queue;
-      currentOnlineQueueIndex = index >= 0 ? index : queue.findIndex(t => t.title === track.title && t.artist === track.artist);
+      // Keep our own copy so reordering "next up" never mutates the explore/search lists
+      if (queue !== currentOnlineQueue && queue !== onlineQueueSource) {
+        onlineQueueSource = queue;
+        currentOnlineQueue = queue.slice();
+        onlineShuffleList = null;
+      }
+      currentOnlineQueueIndex = index >= 0 ? index : currentOnlineQueue.findIndex(t => t.title === track.title && t.artist === track.artist);
     } else {
+      onlineQueueSource = null;
       currentOnlineQueue = [track];
       currentOnlineQueueIndex = 0;
+      onlineShuffleList = null;
     }
 
     const query = track.query || `${track.title} ${track.artist}`;
@@ -2986,26 +3012,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const coverUrl = track.cover_url || 'placeholder.svg';
     const totalSec = (track.duration && track.duration > 0) ? track.duration : 0;
 
-    // Instant-Play Streaming Engine: If a high-bitrate preview stream is available, start playback immediately (<150ms)!
-    let streamMode = 'full';
-    let finalAudioUrl = streamEndpoint;
-    let streamFullEndpoint = null;
-    let streamQuery = null;
-
-    if (track.preview_url && track.preview_url.startsWith('http')) {
-      streamMode = 'preview';
-      finalAudioUrl = track.preview_url;
-      streamFullEndpoint = streamEndpoint;
-      streamQuery = query;
-      // Concurrently prefetch and cache the full studio master stream in background
-      fetch(resolveApiUrl(`/api/stream/prefetch?q=${encodeURIComponent(query)}`)).catch(() => {});
-    }
-
-    transitionToAudio(finalAudioUrl, track, {
-      streamMode,
-      streamFullEndpoint,
-      streamQuery
-    });
+    // Always stream the full track (no 30s previews)
+    transitionToAudio(streamEndpoint, track, { streamMode: 'full' });
 
     // Update Dock
     playerCover.src = coverUrl;
@@ -3060,6 +3068,7 @@ document.addEventListener('DOMContentLoaded', () => {
     applySmartTransition(track);
     updatePlayIcon(true);
     highlightPlayingRow();
+    refreshQueueDrawerIfOpen();
     broadcastPlaybackState();
     showToast(`Streaming live: ${track.title} - ${track.artist}`, 'info');
   }
@@ -4325,6 +4334,7 @@ document.addEventListener('DOMContentLoaded', () => {
     applySmartTransition(song);
     updatePlayIcon(true);
     highlightPlayingRow();
+    refreshQueueDrawerIfOpen();
   }
 
   function togglePlay() {
@@ -4443,7 +4453,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (isOnlineStreaming) {
       if (!currentOnlineQueue || !currentOnlineQueue.length) return;
       if (isShuffle) {
-        const nextIdx = Math.floor(Math.random() * currentOnlineQueue.length);
+        const nextIdx = ensureOnlineShuffleList().shift();
         playOnlineTrack(currentOnlineQueue[nextIdx], currentOnlineQueue, nextIdx);
       } else {
         if (currentOnlineQueueIndex < currentOnlineQueue.length - 1) {
@@ -4555,6 +4565,7 @@ document.addEventListener('DOMContentLoaded', () => {
     playerShuffle.addEventListener('click', () => {
       isShuffle = !isShuffle;
       localStorage.setItem('musicstudio_shuffle', isShuffle ? 'true' : 'false');
+      onlineShuffleList = null;
       generateShuffleQueue(currentSongIndex);
       updateShuffleUI();
       broadcastPlaybackState();
@@ -4774,42 +4785,19 @@ document.addEventListener('DOMContentLoaded', () => {
       updateNotchProgress(pct, activeDeck.currentTime);
       updateMediaSessionPosition();
 
-      // Preview stream to full master stream handover
-      if (isOnlineStreaming && audioEngine.dataset.streamMode === 'preview' && audioEngine.dataset.streamFullEndpoint) {
-        if (audioEngine.currentTime >= 27.5) {
-          const fullUrl = audioEngine.dataset.streamFullEndpoint;
-          const curPos = audioEngine.currentTime;
-          audioEngine.dataset.streamMode = 'full';
-          audioEngine.src = fullUrl;
-          audioEngine.currentTime = curPos;
-          audioEngine.play().catch(() => {});
-        }
-      }
-
-      // Intelligent zero-gap next-song prefetching (Prioritizing User Queue)
-      if (effectiveDur > 15 && !hasPrefetchedNextTrack && (activeDeck.currentTime / effectiveDur) >= 0.65) {
+      // Zero-gap next-song prefetching: warm the server cache early so a full-length stream is ready for the crossfade
+      if (effectiveDur > 15 && !hasPrefetchedNextTrack && (activeDeck.currentTime / effectiveDur) >= 0.4) {
         hasPrefetchedNextTrack = true;
-        let nextTrack = null;
-        if (userPlayQueue && userPlayQueue.length > 0) {
-          nextTrack = userPlayQueue[0];
-        } else if (isOnlineStreaming && currentOnlineQueue && currentOnlineQueue.length) {
-          if (isShuffle) {
-            const pool = currentOnlineQueue.filter((_, i) => i !== currentOnlineQueueIndex);
-            if (pool.length) nextTrack = pool[Math.floor(Math.random() * pool.length)];
-          } else if (currentOnlineQueueIndex < currentOnlineQueue.length - 1) {
-            nextTrack = currentOnlineQueue[currentOnlineQueueIndex + 1];
-          } else if (repeatMode === 'all') {
-            nextTrack = currentOnlineQueue[0];
-          }
-        }
-        if (nextTrack) {
+        const nextItem = peekNextTrack();
+        const nextTrack = nextItem ? (nextItem.track || nextItem.song) : null;
+        if (nextTrack && (nextItem.type === 'online' || nextItem.type === 'queue') && (nextTrack.is_online || !nextTrack.filename)) {
           const nextQuery = nextTrack.query || `${nextTrack.title} ${nextTrack.artist}`;
           fetch(resolveApiUrl(`/api/stream/prefetch?q=${encodeURIComponent(nextQuery)}`)).catch(() => {});
         }
       }
 
       // Smart Transition: DJ & Apple Music-Style Audio Crossfade Engine
-      if (transitionMode && !isCrossfading && !hasTriggeredAutoCrossfade && effectiveDur > 0) {
+      if (transitionMode && repeatMode !== 'one' && !isCrossfading && !hasTriggeredAutoCrossfade && effectiveDur > 0) {
         const nextItem = peekNextTrack();
         const nextTrackObj = nextItem ? (nextItem.track || nextItem.song) : null;
         const plan = planSmartTransition(curTrackObj, nextTrackObj, false);
@@ -4953,17 +4941,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (isCrossfading) {
       cancelCrossfade();
     }
-    if (isOnlineStreaming && audioEngine.dataset.streamMode === 'preview' && targetTime > 27.5 && audioEngine.dataset.streamFullEndpoint) {
-      const fullUrl = audioEngine.dataset.streamFullEndpoint;
-      audioEngine.dataset.streamMode = 'full';
-      audioEngine.src = fullUrl;
-      audioEngine.currentTime = targetTime;
-      audioEngine.play().catch(() => {});
-    } else {
-      const effDur = getEffectiveAudioDuration();
-      const maxDur = effDur > 0 ? effDur : ((audioEngine.duration && isFinite(audioEngine.duration)) ? audioEngine.duration : 10000);
-      audioEngine.currentTime = Math.max(0, Math.min(targetTime, maxDur - 0.2));
-    }
+    const effDur = getEffectiveAudioDuration();
+    const maxDur = effDur > 0 ? effDur : ((audioEngine.duration && isFinite(audioEngine.duration)) ? audioEngine.duration : 10000);
+    audioEngine.currentTime = Math.max(0, Math.min(targetTime, maxDur - 0.2));
   }
 
   playerScrubber.addEventListener('change', (e) => {
@@ -5783,7 +5763,122 @@ document.addEventListener('DOMContentLoaded', () => {
     showToast(`Playing from Queue: ${track.title}`, 'info');
   }
 
-  let draggedQueueIndex = null;
+  const QUEUE_ICON_GRIP = `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/></svg>`;
+  const QUEUE_ICON_PLUS = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`;
+
+  // Pointer-based drag-to-reorder (works with mouse, touch and pen; HTML5 drag & drop does not on mobile)
+  function enableQueueSorting(listEl, onMove) {
+    listEl.querySelectorAll('.queue-item-drag').forEach(handle => {
+      handle.addEventListener('pointerdown', (e) => {
+        const row = handle.closest('.queue-item');
+        if (!row || e.button > 0) return;
+        e.preventDefault();
+        handle.setPointerCapture(e.pointerId);
+
+        const rows = Array.from(listEl.querySelectorAll('.queue-item'));
+        const from = rows.indexOf(row);
+        const step = row.getBoundingClientRect().height + 6; // row height + list gap
+        const startY = e.clientY;
+        let to = from;
+        row.classList.add('dragging');
+        listEl.classList.add('is-sorting');
+
+        const move = (ev) => {
+          const dy = ev.clientY - startY;
+          to = Math.max(0, Math.min(rows.length - 1, from + Math.round(dy / step)));
+          row.style.transform = `translateY(${dy}px)`;
+          rows.forEach((r, i) => {
+            if (i === from) return;
+            let shift = 0;
+            if (from < to && i > from && i <= to) shift = -step;
+            if (from > to && i < from && i >= to) shift = step;
+            r.style.transform = shift ? `translateY(${shift}px)` : '';
+          });
+        };
+        const finish = () => {
+          handle.removeEventListener('pointermove', move);
+          handle.removeEventListener('pointerup', finish);
+          handle.removeEventListener('pointercancel', finish);
+          listEl.classList.remove('is-sorting');
+          rows.forEach(r => { r.style.transform = ''; r.classList.remove('dragging'); });
+          if (to !== from) onMove(from, to);
+        };
+        handle.addEventListener('pointermove', move);
+        handle.addEventListener('pointerup', finish);
+        handle.addEventListener('pointercancel', finish);
+      });
+    });
+  }
+
+  function moveItem(arr, from, to) {
+    const [moved] = arr.splice(from, 1);
+    arr.splice(to, 0, moved);
+  }
+
+  // What will play after the user queue runs out, in the order it will really play.
+  // `move`/`remove` are present only when that order can be edited without touching the library sort.
+  function getUpcomingContext() {
+    const LIMIT = 30;
+    if (isOnlineStreaming && currentOnlineQueue.length > 0) {
+      if (isShuffle) {
+        const list = ensureOnlineShuffleList();
+        return {
+          label: 'NEXT UP · SHUFFLED',
+          items: list.slice(0, LIMIT).map((qi, i) => ({
+            track: currentOnlineQueue[qi],
+            play: () => { list.splice(i, 1); playOnlineTrack(currentOnlineQueue[qi], currentOnlineQueue, qi); }
+          })),
+          move: (from, to) => moveItem(list, from, to),
+          remove: (i) => list.splice(i, 1)
+        };
+      }
+      const base = currentOnlineQueueIndex + 1;
+      return {
+        label: 'NEXT UP',
+        items: currentOnlineQueue.slice(base, base + LIMIT).map((t, i) => ({
+          track: t,
+          play: () => playOnlineTrack(t, currentOnlineQueue, base + i)
+        })),
+        move: (from, to) => moveItem(currentOnlineQueue, base + from, base + to),
+        remove: (i) => currentOnlineQueue.splice(base + i, 1)
+      };
+    }
+    if (currentSongIndex >= 0 && librarySongs.length > 0) {
+      if (isShuffle && shuffleQueue.length === librarySongs.length) {
+        const base = shufflePointer + 1;
+        return {
+          label: 'NEXT UP · SHUFFLED',
+          items: shuffleQueue.slice(base, base + LIMIT).map((li, i) => ({
+            track: librarySongs[li],
+            play: () => { shufflePointer = base + i; playTrack(li); }
+          })),
+          // No remove: shuffleQueue must stay a full permutation of the library or it gets regenerated
+          move: (from, to) => moveItem(shuffleQueue, base + from, base + to)
+        };
+      }
+      const base = currentSongIndex + 1;
+      return {
+        label: 'NEXT FROM LIBRARY',
+        items: librarySongs.slice(base, base + LIMIT).map((t, i) => ({ track: t, play: () => playTrack(base + i) }))
+      };
+    }
+    return { label: 'NEXT UP', items: [] };
+  }
+
+  function queueRowHtml(track, { editable, number }) {
+    const dur = (track.duration && track.duration > 0) ? formatSeconds(track.duration) : '';
+    const cover = track.cover_url || (track.filename ? resolveApiUrl(`/api/songs/artwork/${encodeURIComponent(track.filename)}`) : 'placeholder.svg');
+    return `
+      ${editable
+        ? `<div class="queue-item-drag" title="Drag to reorder">${QUEUE_ICON_GRIP}</div>`
+        : `<span class="queue-item-num">${number}</span>`}
+      <img src="${cover}" onerror="this.src='placeholder.svg'" class="queue-item-thumb" draggable="false" />
+      <div class="queue-item-info" title="Click to play">
+        <div class="queue-item-title truncate">${escapeHtml(track.title)}</div>
+        <div class="queue-item-artist truncate">${escapeHtml(track.artist)}</div>
+      </div>
+      <span class="queue-item-dur">${dur}</span>`;
+  }
 
   function renderQueueDrawer() {
     if (!queueDrawer) return;
@@ -5808,142 +5903,80 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
 
-    // 2. Next In Queue section (User's queue)
+    // 2. Your queue (plays first, fully editable)
     if (queueUserList) {
       queueUserList.innerHTML = '';
       if (userPlayQueue.length === 0) {
-        queueUserList.innerHTML = `<div class="queue-empty-msg">Queue is empty. Click "Add to Queue" on any track to line up your songs.</div>`;
+        queueUserList.innerHTML = `<div class="queue-empty-msg">Nothing queued. Use <b>+</b> on any track below, or "Add to Queue" anywhere, to line up songs.</div>`;
       } else {
         userPlayQueue.forEach((track, idx) => {
           const item = document.createElement('div');
           item.className = 'queue-item';
-          item.draggable = true;
-          item.dataset.index = idx;
-
-          const dur = (track.duration && track.duration > 0) ? formatSeconds(track.duration) : '--:--';
-          const cover = track.cover_url || 'placeholder.svg';
-
-          item.innerHTML = `
-            <div class="queue-item-drag" title="Drag to reorder">
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-                <circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/>
-                <circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/>
-                <circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/>
-              </svg>
-            </div>
-            <img src="${cover}" onerror="this.src='placeholder.svg'" class="queue-item-thumb" />
-            <div class="queue-item-info">
-              <div class="queue-item-title truncate" title="${escapeHtml(track.title)}">${escapeHtml(track.title)}</div>
-              <div class="queue-item-artist truncate" title="${escapeHtml(track.artist)}">${escapeHtml(track.artist)}</div>
-            </div>
-            <span style="font-size: 0.78rem; color: var(--text-tertiary); font-family: var(--font-mono); margin-right: 4px;">${dur}</span>
-            <button class="queue-item-remove" title="Remove from queue" data-idx="${idx}">&times;</button>
-          `;
-
-          // HTML5 Drag and Drop events
-          item.addEventListener('dragstart', (e) => {
-            draggedQueueIndex = idx;
-            item.classList.add('dragging');
-            e.dataTransfer.effectAllowed = 'move';
-            e.dataTransfer.setData('text/plain', idx);
-          });
-
-          item.addEventListener('dragend', () => {
-            item.classList.remove('dragging');
-            document.querySelectorAll('.queue-item').forEach(el => el.classList.remove('drag-over'));
-            draggedQueueIndex = null;
-          });
-
-          item.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            e.dataTransfer.dropEffect = 'move';
-            item.classList.add('drag-over');
-          });
-
-          item.addEventListener('dragleave', () => {
-            item.classList.remove('drag-over');
-          });
-
-          item.addEventListener('drop', (e) => {
-            e.preventDefault();
-            item.classList.remove('drag-over');
-            const fromIdx = draggedQueueIndex !== null ? draggedQueueIndex : parseInt(e.dataTransfer.getData('text/plain'), 10);
-            const toIdx = idx;
-            if (!isNaN(fromIdx) && fromIdx !== toIdx && fromIdx >= 0 && fromIdx < userPlayQueue.length) {
-              const [moved] = userPlayQueue.splice(fromIdx, 1);
-              userPlayQueue.splice(toIdx, 0, moved);
-              updateQueueBadge();
-              renderQueueDrawer();
-            }
-          });
-
-          // Click remove button
-          const removeBtn = item.querySelector('.queue-item-remove');
-          if (removeBtn) {
-            removeBtn.addEventListener('click', (e) => {
-              e.stopPropagation();
-              removeFromQueue(idx);
-            });
-          }
-
-          // Double click to play immediately
-          item.addEventListener('dblclick', () => {
+          item.innerHTML = queueRowHtml(track, { editable: true }) +
+            `<button class="queue-item-remove" title="Remove from queue">&times;</button>`;
+          item.querySelector('.queue-item-info').addEventListener('click', () => {
             const [selected] = userPlayQueue.splice(idx, 1);
             updateQueueBadge();
             renderQueueDrawer();
             playQueueTrack(selected);
           });
-
+          item.querySelector('.queue-item-remove').addEventListener('click', (e) => {
+            e.stopPropagation();
+            removeFromQueue(idx);
+          });
           queueUserList.appendChild(item);
         });
-      }
-    }
-
-    // 3. Next Up from Context
-    if (queueContextList) {
-      queueContextList.innerHTML = '';
-      let upcoming = [];
-      if (isOnlineStreaming && currentOnlineQueue && currentOnlineQueue.length > 0) {
-        const start = currentOnlineQueueIndex + 1;
-        upcoming = currentOnlineQueue.slice(start, start + 8);
-      } else if (currentSongIndex >= 0 && librarySongs.length > 0) {
-        upcoming = librarySongs.slice(currentSongIndex + 1, currentSongIndex + 9);
-      }
-
-      if (upcoming.length === 0) {
-        queueContextList.innerHTML = `<div style="padding: 12px; font-size: 0.78rem; color: var(--text-tertiary); text-align: center;">End of playback context</div>`;
-      } else {
-        upcoming.forEach((track, uIdx) => {
-          const uItem = document.createElement('div');
-          uItem.className = 'queue-item';
-          uItem.style.cursor = 'pointer';
-          const dur = (track.duration && track.duration > 0) ? formatSeconds(track.duration) : '--:--';
-          const cover = track.cover_url || (track.filename ? resolveApiUrl(`/api/songs/artwork/${encodeURIComponent(track.filename)}`) : 'placeholder.svg');
-
-          uItem.innerHTML = `
-            <span style="font-size: 0.75rem; color: var(--text-tertiary); min-width: 18px; text-align: center;">${uIdx + 1}</span>
-            <img src="${cover}" onerror="this.src='placeholder.svg'" class="queue-item-thumb" />
-            <div class="queue-item-info">
-              <div class="queue-item-title truncate">${escapeHtml(track.title)}</div>
-              <div class="queue-item-artist truncate">${escapeHtml(track.artist)}</div>
-            </div>
-            <span style="font-size: 0.78rem; color: var(--text-tertiary); font-family: var(--font-mono);">${dur}</span>
-          `;
-
-          uItem.addEventListener('click', () => {
-            if (isOnlineStreaming) {
-              const targetIdx = currentOnlineQueueIndex + 1 + uIdx;
-              playOnlineTrack(track, currentOnlineQueue, targetIdx);
-            } else {
-              const targetIdx = currentSongIndex + 1 + uIdx;
-              playTrack(targetIdx);
-            }
-          });
-
-          queueContextList.appendChild(uItem);
+        enableQueueSorting(queueUserList, (from, to) => {
+          moveItem(userPlayQueue, from, to);
+          updateQueueBadge();
+          renderQueueDrawer();
         });
       }
     }
+
+    // 3. What follows (reorderable when shuffled or when playing an online list)
+    if (queueContextList) {
+      queueContextList.innerHTML = '';
+      const ctx = getUpcomingContext();
+      const header = document.getElementById('queue-context-header');
+      if (header) header.textContent = ctx.label;
+
+      if (ctx.items.length === 0) {
+        queueContextList.innerHTML = `<div class="queue-empty-msg">End of playback context</div>`;
+      } else {
+        const editable = typeof ctx.move === 'function';
+        ctx.items.forEach((entry, i) => {
+          const uItem = document.createElement('div');
+          uItem.className = 'queue-item';
+          uItem.innerHTML = queueRowHtml(entry.track, { editable, number: i + 1 }) +
+            `<button class="queue-item-add" title="Move to my queue">${QUEUE_ICON_PLUS}</button>` +
+            (ctx.remove ? `<button class="queue-item-remove" title="Remove from up next">&times;</button>` : '');
+          uItem.querySelector('.queue-item-info').addEventListener('click', entry.play);
+          uItem.querySelector('.queue-item-add').addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (ctx.remove) ctx.remove(i);
+            addToQueue(entry.track);
+          });
+          const rm = uItem.querySelector('.queue-item-remove');
+          if (rm) rm.addEventListener('click', (e) => {
+            e.stopPropagation();
+            ctx.remove(i);
+            renderQueueDrawer();
+          });
+          queueContextList.appendChild(uItem);
+        });
+        if (editable) {
+          enableQueueSorting(queueContextList, (from, to) => {
+            ctx.move(from, to);
+            renderQueueDrawer();
+          });
+        }
+      }
+    }
+  }
+
+  function refreshQueueDrawerIfOpen() {
+    if (queueDrawer && queueDrawer.classList.contains('is-open')) renderQueueDrawer();
   }
 
   function toggleQueueDrawer(open) {
@@ -5958,6 +5991,34 @@ document.addEventListener('DOMContentLoaded', () => {
       queueOverlay.classList.remove('is-open');
     }
   }
+
+  // ==================== APP UPDATE NOTICE ====================
+  async function checkForAppUpdate() {
+    if (isDeviceOffline) return;
+    try {
+      const info = await (await fetch(resolveApiUrl('/api/app-update'))).json();
+      if (!info.update_available || localStorage.getItem('musicstudio_dismissed_update') === info.latest) return;
+      let bar = document.getElementById('app-update-bar');
+      if (!bar) {
+        bar = document.createElement('div');
+        bar.id = 'app-update-bar';
+        document.body.appendChild(bar);
+      }
+      bar.innerHTML = `<span>🎉 Music Studio <b>v${escapeHtml(info.latest)}</b> is available <span class="app-update-cur">(you have v${escapeHtml(info.current)})</span></span>
+        <button class="app-update-go">Download</button><button class="app-update-x" title="Dismiss">&times;</button>`;
+      bar.querySelector('.app-update-go').onclick = () => {
+        fetch(resolveApiUrl('/api/app-update/open'), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: info.url })
+        }).catch(() => window.open(info.url, '_blank'));
+      };
+      bar.querySelector('.app-update-x').onclick = () => {
+        localStorage.setItem('musicstudio_dismissed_update', info.latest);
+        bar.remove();
+      };
+    } catch (e) {}
+  }
+  setTimeout(checkForAppUpdate, 4000);
+  setInterval(checkForAppUpdate, 6 * 60 * 60 * 1000);
 
   // ==================== STATE PERSISTENCE LOGIC ====================
   let lastStateSaveTime = 0;
@@ -5975,8 +6036,12 @@ document.addEventListener('DOMContentLoaded', () => {
         album: currentStreamingTrack.album || 'Online Stream',
         duration: currentStreamingTrack.duration || (audioEngine.duration && isFinite(audioEngine.duration) ? audioEngine.duration : 0),
         cover_url: currentStreamingTrack.cover_url || 'placeholder.svg',
-        preview_url: currentStreamingTrack.preview_url || '',
         query: currentStreamingTrack.query || '',
+        online_queue: currentOnlineQueue.slice(0, 100).map(t => ({
+          title: t.title, artist: t.artist, album: t.album || '', duration: t.duration || 0,
+          cover_url: t.cover_url || '', query: t.query || ''
+        })),
+        online_queue_index: currentOnlineQueueIndex,
         time: (audioEngine.currentTime && isFinite(audioEngine.currentTime)) ? audioEngine.currentTime : 0,
         was_playing: !audioEngine.paused,
         is_shuffle: isShuffle,
@@ -6097,16 +6162,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const query = data.query || `${data.title} ${data.artist}`;
         const streamEndpoint = resolveApiUrl(`/api/stream?q=${encodeURIComponent(query)}`);
 
-        if (data.preview_url && data.preview_url.startsWith('http') && pos < 27.5) {
-          audioEngine.dataset.streamMode = 'preview';
-          audioEngine.dataset.streamFullEndpoint = streamEndpoint;
-          audioEngine.dataset.streamQuery = query;
-          audioEngine.src = data.preview_url;
+        audioEngine.dataset.streamMode = 'full';
+        delete audioEngine.dataset.streamFullEndpoint;
+        delete audioEngine.dataset.streamQuery;
+        audioEngine.src = streamEndpoint;
+        if (Array.isArray(data.online_queue) && data.online_queue.length) {
+          currentOnlineQueue = data.online_queue;
+          currentOnlineQueueIndex = Math.max(0, Math.min(data.online_queue_index || 0, data.online_queue.length - 1));
         } else {
-          audioEngine.dataset.streamMode = 'full';
-          delete audioEngine.dataset.streamFullEndpoint;
-          delete audioEngine.dataset.streamQuery;
-          audioEngine.src = streamEndpoint;
+          currentOnlineQueue = [data];
+          currentOnlineQueueIndex = 0;
         }
       } else if (data.is_android_mediastore && data.file_path) {
         audioEngine.src = (window.Capacitor && window.Capacitor.convertFileSrc) ? window.Capacitor.convertFileSrc(data.file_path) : data.file_path;
@@ -6203,6 +6268,7 @@ document.addEventListener('DOMContentLoaded', () => {
     } else if (action === 'shuffle') {
       isShuffle = !isShuffle;
       localStorage.setItem('musicstudio_shuffle', isShuffle ? 'true' : 'false');
+      onlineShuffleList = null;
       generateShuffleQueue(currentSongIndex);
       updateShuffleUI();
       broadcastPlaybackState();

@@ -720,6 +720,22 @@ def get_status():
             "recent_completed": state.recent_completed[:20]
         }
 
+@app.get("/api/app-update")
+def app_update():
+    return updater.check_app_update()
+
+class OpenUrlPayload(BaseModel):
+    url: str
+
+@app.post("/api/app-update/open")
+def app_update_open(req: OpenUrlPayload):
+    import webbrowser
+    # Only ever open this project's GitHub release downloads
+    if not req.url.startswith(f"https://github.com/{updater.APP_REPO}/"):
+        raise HTTPException(status_code=400, detail="Unsupported URL")
+    webbrowser.open(req.url)
+    return {"status": "opened"}
+
 @app.post("/api/download/start")
 def start_download(req: DownloadRequest, background_tasks: BackgroundTasks):
     if state.is_downloading:
