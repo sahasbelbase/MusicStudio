@@ -121,7 +121,7 @@ def get_featured_playlists() -> List[Dict]:
         }
     ]
 
-def get_trending_tracks(limit: int = 15) -> List[Dict]:
+def get_trending_tracks(limit: int = 60) -> List[Dict]:
     """Fetches real-time trending tracks from Deezer global chart."""
     cached = _get_cached(f"trending_{limit}")
     if cached:
@@ -132,8 +132,9 @@ def get_trending_tracks(limit: int = 15) -> List[Dict]:
     tracks = []
 
     if data and "data" in data:
-        for t in data["data"]:
+        for rank, t in enumerate(data["data"], 1):
             tracks.append({
+                "rank": rank,
                 "id": str(t.get("id")),
                 "title": t.get("title_short") or t.get("title"),
                 "artist": t.get("artist", {}).get("name", "Unknown Artist"),
@@ -150,6 +151,7 @@ def get_trending_tracks(limit: int = 15) -> List[Dict]:
             _, sp_tracks = SpotifyExtractor.extract_tracks("https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M")
             for idx, t in enumerate(sp_tracks[:limit]):
                 tracks.append({
+                    "rank": idx + 1,
                     "id": f"sp_{idx}",
                     "title": t.get("title"),
                     "artist": t.get("artist"),

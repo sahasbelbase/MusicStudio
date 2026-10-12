@@ -5427,3 +5427,48 @@ body.platform-android .mobile-nav-item.active svg {
   cursor: pointer;
   line-height: 1;
 }
+
+/* Album / playlist modal: keep the player dock visible and usable while the modal is open */
+body.album-modal-open #playlist-modal {
+  padding-bottom: 112px; /* dock (74px) + its 16px offset + breathing room */
+}
+body.album-modal-open #playlist-modal .modal-window {
+  max-height: calc(100vh - 136px);
+}
+body.album-modal-open .player-dock {
+  z-index: 125; /* above the modal (120), dialogs opened from the modal are raised further below */
+}
+@media (max-width: 900px) {
+  body.album-modal-open #playlist-modal {
+    padding-bottom: calc(var(--mobile-nav-height, 60px) + var(--mobile-safe-bottom, 0px) + 84px);
+  }
+  body.album-modal-open #playlist-modal .modal-window {
+    max-height: calc(100vh - var(--mobile-nav-height, 60px) - 150px);
+  }
+  body.album-modal-open .player-dock { z-index: 1250; }
+}
+body.album-modal-open #confirm-modal,
+body.album-modal-open #add-to-playlist-modal,
+body.album-modal-open #create-playlist-modal {
+  z-index: 130; /* dialogs opened from the album modal must cover the raised dock */
+}
+@media (max-width: 900px) {
+  body.album-modal-open #confirm-modal,
+  body.album-modal-open #add-to-playlist-modal,
+  body.album-modal-open #create-playlist-modal { z-index: 1300; }
+}
+
+.explore-song-thumb-wrap { position: relative; }
+.explore-rank {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  z-index: 2;
+  padding: 1px 6px;
+  font-size: 0.66rem;
+  font-weight: 800;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  backdrop-filter: blur(6px);
+}

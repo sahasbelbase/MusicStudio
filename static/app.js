@@ -422,7 +422,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Application State
   let rawLibrarySongs = [];
-  let librarySongs = [];
+  let librarySongs = [];   // full sorted library: the playback list, indices stay stable while searching
+  let visibleSongs = [];   // librarySongs narrowed by the search box: what the library view shows
   let userPlaylists = [];
   let pendingCoverBase64 = null;
   let trackToAdd = null;
@@ -928,6 +929,58 @@ document.addEventListener('DOMContentLoaded', () => {
     return 0;
   }
 
+  // ==================== SILENCE TRIMMING ====================
+  // Leading/trailing silence per track (measured by the server with ffmpeg), so a song that ends with
+  // 15s of silence still crossfades into a song that opens with 12s of silence at the right moments.
+  const silenceCache = new Map();
+
+  function silenceInfo(track) {
+    if (!track || track.is_android_mediastore || track.is_local_device) return null;
+    if (track.filename) {
+      return { key: 'f:' + track.filename, url: `/api/audio/silence?filename=${encodeURIComponent(track.filename)}` };
+    }
+    const q = track.query || (track.title ? `${track.title} ${track.artist}` : '');
+    return q ? { key: 'q:' + q, url: `/api/audio/silence?q=${encodeURIComponent(q)}` } : null;
+  }
+
+  function getKnownSilence(track) {
+    const info = silenceInfo(track);
+    return info ? (silenceCache.get(info.key) || null) : null;
+  }
+
+  async function loadSilence(track) {
+    const info = silenceInfo(track);
+    if (!info) return null;
+    if (silenceCache.has(info.key)) return silenceCache.get(info.key);
+    try {
+      const j = await (await fetch(info.url)).json();
+      if (j && j.ready) {
+        const sil = { lead: j.lead || 0, trail: j.trail || 0 };
+        silenceCache.set(info.key, sil);
+        return sil;
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  function currentTrackObject() {
+    return isOnlineStreaming ? currentStreamingTrack : (currentSongIndex >= 0 ? librarySongs[currentSongIndex] : null);
+  }
+
+  // Measure the track that just started; if it opens with silence we are still sitting in, skip past it
+  function primeSilence(track, retry = true) {
+    loadSilence(track).then(sil => {
+      if (sil) {
+        if (transitionMode && currentTrackObject() === track && sil.lead > 0.3 && activeDeck.currentTime < sil.lead - 0.3) {
+          try { activeDeck.currentTime = sil.lead - 0.05; } catch (e) {}
+        }
+      } else if (retry && silenceInfo(track) && track.query !== undefined) {
+        // Streams can only be analysed once the server finished caching them
+        setTimeout(() => { if (currentTrackObject() === track) primeSilence(track, false); }, 9000);
+      }
+    });
+  }
+
   function peekNextTrack() {
     if (repeatMode === 'one') {
       if (isOnlineStreaming && currentStreamingTrack) {
@@ -1151,7 +1204,8 @@ document.addEventListener('DOMContentLoaded', () => {
       incomingDeck.volume = 0;
       incomingDeck.load();
       // currentTime set before load() is discarded, so skip the silent lead-in once metadata is ready
-      const cueOffset = transitionPlan.cueOffset || 0.35;
+      const knownIn = getKnownSilence(incomingTrack);
+      const cueOffset = (knownIn && knownIn.lead > 0.3) ? Math.max(0, knownIn.lead - 0.05) : (transitionPlan.cueOffset || 0.35);
       incomingDeck.addEventListener('loadedmetadata', () => {
         try { if (incomingDeck.currentTime < cueOffset) incomingDeck.currentTime = cueOffset; } catch (e) {}
       }, { once: true });
@@ -1192,6 +1246,13 @@ document.addEventListener('DOMContentLoaded', () => {
       activeDeck.volume = currentMasterVolume;
       activeDeck.currentTime = 0;
       activeDeck.load();
+      const knownLead = transitionMode ? getKnownSilence(incomingTrack) : null;
+      if (knownLead && knownLead.lead > 0.3) {
+        const deck = activeDeck;
+        deck.addEventListener('loadedmetadata', () => {
+          try { deck.currentTime = Math.max(0, knownLead.lead - 0.05); } catch (e) {}
+        }, { once: true });
+      }
       const playPromise = activeDeck.play();
       if (playPromise !== undefined) {
         playPromise.catch(() => {
@@ -1490,6 +1551,7 @@ document.addEventListener('DOMContentLoaded', () => {
       localStorage.setItem('musicstudio_cached_library', JSON.stringify(rawLibrarySongs));
     } catch (e) {}
 
+    if (trendingChart.length) renderTrendingTracks();
     navSongCount.textContent = rawLibrarySongs.length;
     if (mobileNavSongCount) mobileNavSongCount.textContent = rawLibrarySongs.length;
     libraryCountLabel.textContent = `${rawLibrarySongs.length} track${rawLibrarySongs.length === 1 ? '' : 's'}`;
@@ -1738,7 +1800,9 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ==================== LIBRARY LOADING, GROUPING & SORTING ====================
-  async function loadLibrary(query = '') {
+  async function loadLibrary() {
+    // Always load the whole library; the search box filters in memory so play indices stay valid
+    const query = '';
     try {
       const url = query ? `/api/songs?search=${encodeURIComponent(query)}` : '/api/songs';
       const res = await fetch(url);
@@ -1810,17 +1874,10 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function applySortAndFilter() {
-    let list = [...rawLibrarySongs];
-    const q = (librarySearch.value || '').trim().toLowerCase();
-    if (q) {
-      list = list.filter(s =>
-        (s.title || '').toLowerCase().includes(q) ||
-        (s.artist || '').toLowerCase().includes(q) ||
-        (s.album || '').toLowerCase().includes(q) ||
-        (s.genre || '').toLowerCase().includes(q)
-      );
-    }
+    // Remember what is playing so re-sorting / reloading never points the player at a different song
+    const playing = (!isOnlineStreaming && currentSongIndex >= 0) ? librarySongs[currentSongIndex] : null;
 
+    const list = [...rawLibrarySongs];
     if (currentSortMode === 'recent') {
       list.sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
     } else if (currentSortMode === 'title') {
@@ -1830,15 +1887,28 @@ document.addEventListener('DOMContentLoaded', () => {
     } else if (currentSortMode === 'duration') {
       list.sort((a, b) => (b.duration || 0) - (a.duration || 0));
     }
-
     librarySongs = list;
+
+    if (playing) {
+      let idx = list.indexOf(playing);
+      if (idx < 0 && playing.filename) idx = list.findIndex(s => s.filename === playing.filename);
+      currentSongIndex = idx;
+    }
+
+    const q = (librarySearch.value || '').trim().toLowerCase();
+    visibleSongs = q ? list.filter(s =>
+      (s.title || '').toLowerCase().includes(q) ||
+      (s.artist || '').toLowerCase().includes(q) ||
+      (s.album || '').toLowerCase().includes(q) ||
+      (s.genre || '').toLowerCase().includes(q)
+    ) : list;
 
     if (currentGroupMode === 'playlists' || currentGroupMode === 'most_played') {
       renderLibrary();
       return;
     }
 
-    libraryCountLabel.textContent = `${librarySongs.length} track${librarySongs.length === 1 ? '' : 's'}`;
+    libraryCountLabel.textContent = `${visibleSongs.length} track${visibleSongs.length === 1 ? '' : 's'}`;
     generateShuffleQueue(currentSongIndex >= 0 ? currentSongIndex : -1);
     renderLibrary();
   }
@@ -1860,7 +1930,7 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    if (librarySongs.length === 0) {
+    if (visibleSongs.length === 0) {
       const isSearchActive = Boolean((librarySearch.value || '').trim());
       if (isSearchActive) {
         libraryContainer.innerHTML = `
@@ -1908,8 +1978,10 @@ document.addEventListener('DOMContentLoaded', () => {
       if (viewSwitchWrap) viewSwitchWrap.style.display = 'flex';
       const isGrid = libraryContainer.classList.contains('grid-mode');
 
+      const globalIdx = new Map(librarySongs.map((s, i) => [s, i]));
       if (isGrid) {
-        librarySongs.forEach((song, idx) => {
+        visibleSongs.forEach((song) => {
+          const idx = globalIdx.get(song);
           const card = document.createElement('div');
           card.className = 'song-card' + (idx === currentSongIndex ? ' playing' : '');
           card.dataset.index = idx;
@@ -1946,7 +2018,8 @@ document.addEventListener('DOMContentLoaded', () => {
           libraryContainer.appendChild(card);
         });
       } else {
-        librarySongs.forEach((song, idx) => {
+        visibleSongs.forEach((song, vpos) => {
+          const idx = globalIdx.get(song);
           const row = document.createElement('div');
           row.className = 'song-row' + (idx === currentSongIndex ? ' playing' : '');
           row.dataset.index = idx;
@@ -1955,7 +2028,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
           row.innerHTML = `
             <div class="song-row-left">
-              <span class="song-row-num">${idx + 1}</span>
+              <span class="song-row-num">${vpos + 1}</span>
               <img class="song-row-thumb" src="${coverUrl}" onerror="this.src='placeholder.svg'" alt="Cover" />
               <div class="song-row-meta truncate">
                 <div class="song-row-title truncate" title="${escapeHtml(song.title)}">${escapeHtml(song.title)}</div>
@@ -2009,7 +2082,7 @@ document.addEventListener('DOMContentLoaded', () => {
       libraryContainer.classList.remove('list-mode');
 
       const artistMap = {};
-      librarySongs.forEach(song => {
+      visibleSongs.forEach(song => {
         const a = song.artist || 'Unknown Artist';
         if (!artistMap[a]) artistMap[a] = [];
         artistMap[a].push(song);
@@ -2041,7 +2114,7 @@ document.addEventListener('DOMContentLoaded', () => {
       libraryContainer.classList.remove('list-mode');
 
       const albumMap = {};
-      librarySongs.forEach(song => {
+      visibleSongs.forEach(song => {
         const key = `${song.album || 'Unknown Album'}___${song.artist || ''}`;
         if (!albumMap[key]) {
           albumMap[key] = {
@@ -2103,7 +2176,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       const genreMap = {};
-      librarySongs.forEach(song => {
+      visibleSongs.forEach(song => {
         const g = resolveSongGenre(song);
         if (!genreMap[g]) genreMap[g] = [];
         genreMap[g].push(song);
@@ -2763,6 +2836,7 @@ document.addEventListener('DOMContentLoaded', () => {
     return onlineShuffleList;
   }
   let hasPrefetchedNextTrack = false;
+  let silencePass = 0; // 0: not measured, 1: measured at 40%, 2: re-measured at 70%
 
   function normalizeSongString(str) {
     return (str || '')
@@ -2872,12 +2946,16 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  let trendingChart = [];
+  const TRENDING_SHOWN = 15;
+
+  // Show the highest-ranked chart songs that are NOT already in the library, keeping chart order
   function renderTrendingTracks(tracks) {
     if (!trendingTracksGrid) return;
+    if (tracks) trendingChart = tracks.map((t, i) => ({ ...t, rank: t.rank || i + 1 }));
     trendingTracksGrid.innerHTML = '';
 
-    // Filter out songs already in user's library
-    const filteredTracks = (tracks || []).filter(t => !findLocalLibraryMatch(t));
+    const filteredTracks = trendingChart.filter(t => !findLocalLibraryMatch(t)).slice(0, TRENDING_SHOWN);
     trendingTracksQueue = filteredTracks;
 
     if (filteredTracks.length === 0) {
@@ -2905,6 +2983,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     card.innerHTML = `
       <div class="explore-song-thumb-wrap">
+        ${track.rank ? `<span class="explore-rank" title="Chart position">#${track.rank}</span>` : ''}
         <img class="explore-song-thumb" src="${coverUrl}" onerror="this.src='placeholder.svg'" alt="Cover" />
         <div class="explore-song-preview-overlay" title="Play Full Track Online (Stream)">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
@@ -2990,6 +3069,7 @@ document.addEventListener('DOMContentLoaded', () => {
     currentStreamingTrack = track;
     hasRecordedPlayForCurrentTrack = false;
     hasPrefetchedNextTrack = false;
+    silencePass = 0;
     hasTriggeredAutoCrossfade = false;
 
     if (queue && queue.length) {
@@ -3069,6 +3149,7 @@ document.addEventListener('DOMContentLoaded', () => {
     updatePlayIcon(true);
     highlightPlayingRow();
     refreshQueueDrawerIfOpen();
+    primeSilence(track);
     broadcastPlaybackState();
     showToast(`Streaming live: ${track.title} - ${track.artist}`, 'info');
   }
@@ -3440,6 +3521,7 @@ document.addEventListener('DOMContentLoaded', () => {
   async function openPlaylistModal(playlistId, isAlbumParam = false, existingData = null) {
     if (!playlistModal) return;
     playlistModal.style.display = 'flex';
+    document.body.classList.add('album-modal-open');
     document.body.style.overflow = 'hidden';
 
     let data = existingData || null;
@@ -3632,6 +3714,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function closePlaylistModal() {
     if (!playlistModal) return;
     playlistModal.style.display = 'none';
+    document.body.classList.remove('album-modal-open');
     document.body.style.overflow = '';
   }
 
@@ -4245,6 +4328,8 @@ document.addEventListener('DOMContentLoaded', () => {
     currentStreamingTrack = null;
     currentSongIndex = idx;
     hasRecordedPlayForCurrentTrack = false;
+    hasPrefetchedNextTrack = false;
+    silencePass = 0;
     hasTriggeredAutoCrossfade = false;
     playHistory.push(idx);
     if (playHistory.length > 100) playHistory.shift();
@@ -4335,6 +4420,7 @@ document.addEventListener('DOMContentLoaded', () => {
     updatePlayIcon(true);
     highlightPlayingRow();
     refreshQueueDrawerIfOpen();
+    primeSilence(song);
   }
 
   function togglePlay() {
@@ -4796,15 +4882,26 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }
 
+      // Measure silence for this and the next track (streams only become measurable once cached, so retry later)
+      const playedRatio = activeDeck.currentTime / effectiveDur;
+      if (effectiveDur > 15 && (playedRatio >= 0.4 && silencePass < 1 || playedRatio >= 0.7 && silencePass < 2)) {
+        silencePass++;
+        const nx = peekNextTrack();
+        loadSilence(curTrackObj);
+        loadSilence(nx ? (nx.track || nx.song) : null);
+      }
+
       // Smart Transition: DJ & Apple Music-Style Audio Crossfade Engine
       if (transitionMode && repeatMode !== 'one' && !isCrossfading && !hasTriggeredAutoCrossfade && effectiveDur > 0) {
         const nextItem = peekNextTrack();
         const nextTrackObj = nextItem ? (nextItem.track || nextItem.song) : null;
         const plan = planSmartTransition(curTrackObj, nextTrackObj, false);
-        const safeDuration = Math.min(plan.durationMs / 1000, Math.max(3.8, effectiveDur * 0.28));
-        const remainingTime = effectiveDur - activeDeck.currentTime;
+        const trailSilence = (getKnownSilence(curTrackObj) || { trail: 0 }).trail;
+        const soundEnd = effectiveDur - trailSilence; // where the music actually stops
+        const safeDuration = Math.min(plan.durationMs / 1000, Math.max(3.8, soundEnd * 0.28));
+        const remainingTime = soundEnd - activeDeck.currentTime;
 
-        if (remainingTime <= safeDuration && remainingTime > 0.2 && activeDeck.currentTime > 3) {
+        if (remainingTime <= safeDuration && (effectiveDur - activeDeck.currentTime) > 0.2 && activeDeck.currentTime > 3) {
           hasTriggeredAutoCrossfade = true;
           isAutoCrossfadeInProgress = true;
           playNextTrack();

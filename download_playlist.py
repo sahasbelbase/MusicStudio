@@ -51,13 +51,36 @@ except ImportError:
                 pass
         return False
 
+def _windows_music_dir():
+    """The real Music folder: OneDrive/known-folder redirection means ~/Music may not exist or may be the wrong one."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        class GUID(ctypes.Structure):
+            _fields_ = [("a", wintypes.DWORD), ("b", wintypes.WORD), ("c", wintypes.WORD), ("d", ctypes.c_ubyte * 8)]
+        folderid_music = GUID(0x4BD8D571, 0x6D19, 0x48D3, (ctypes.c_ubyte * 8)(0xBE, 0x97, 0x42, 0x22, 0x20, 0x08, 0x0E, 0x43))
+        out = ctypes.c_wchar_p()
+        if ctypes.windll.shell32.SHGetKnownFolderPath(ctypes.byref(folderid_music), 0, None, ctypes.byref(out)) == 0:
+            path = out.value
+            ctypes.windll.ole32.CoTaskMemFree(out)
+            if path and os.path.isdir(path):
+                return path
+    except Exception:
+        pass
+    return None
+
 def get_default_output_folder():
-    user_music = os.path.expanduser("~/Music/Music Studio")
+    music_root = (_windows_music_dir() if sys.platform == "win32" else None) or os.path.expanduser("~/Music")
+    user_music = os.path.join(music_root, "Music Studio")
+    legacy_music = os.path.expanduser("~/Music/Music Studio")
+    # Keep using the old location if that is where this user's songs already are
+    if user_music != legacy_music and not os.path.isdir(user_music) and os.path.isdir(legacy_music):
+        user_music = legacy_music
     local_songs = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Songs")
     if getattr(sys, 'frozen', False):
         os.makedirs(user_music, exist_ok=True)
         return user_music
-    if os.path.isdir(user_music) and any(f.endswith('.mp3') for f in os.listdir(user_music)):
+    if os.path.isdir(user_music) and any(f.lower().endswith('.mp3') for f in os.listdir(user_music)):
         return user_music
     if os.path.isdir(local_songs):
         return local_songs
@@ -477,14 +500,23 @@ class YouTubeExtractor:
             'skip_download': True,
             'quiet': True,
             'no_warnings': True,
-            'nocheckcertificate': True,
+            'js_runtimes': updater.js_runtimes(),
         }
         
         tracks = []
         collection_title = "YouTube Music Playlist"
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except Exception as e:
+            if not _is_cert_error(e):
+                raise
+            ydl_opts['nocheckcertificate'] = True  # only after a verified attempt failed
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+
+        if True:
             
             if 'entries' in info:
                 collection_title = info.get('title', 'YouTube Playlist')
@@ -756,7 +788,6 @@ def download_single_track(
         'ffmpeg_location': ffmpeg_bin,
         'quiet': True,
         'no_warnings': True,
-        'nocheckcertificate': True,
         'ignoreerrors': False,
         'noplaylist': True,
         'js_runtimes': updater.js_runtimes(),
@@ -788,6 +819,10 @@ def download_single_track(
                 raise RuntimeError(f"FFmpeg conversion failed to produce {temp_mp3}")
                 
         except Exception as e:
+            # Verify TLS by default; fall back to unverified only if this machine's CA store is the problem
+            if _is_cert_error(e) and not ydl_opts.get('nocheckcertificate'):
+                ydl_opts['nocheckcertificate'] = True
+                continue
             # A stale yt-dlp is the usual cause of region/extraction failures: update once, then retry
             if not auto_updated and _looks_like_extractor_failure(e):
                 auto_updated = True
@@ -806,6 +841,10 @@ def download_single_track(
                 return False, str(e), target_filename
 
     return False, "Max retries exceeded", target_filename
+
+def _is_cert_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return "certificate verify failed" in msg or "certificate_verify_failed" in msg
 
 def _looks_like_extractor_failure(exc: Exception) -> bool:
     msg = str(exc).lower()

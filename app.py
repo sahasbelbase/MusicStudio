@@ -763,7 +763,7 @@ def start_enrich(req: EnrichRequest, background_tasks: BackgroundTasks):
 def get_featured():
     return {
         "featured": discovery.get_featured_playlists(),
-        "trending": discovery.get_trending_tracks(limit=15)
+        "trending": discovery.get_trending_tracks(limit=60)
     }
 
 @app.get("/api/explore/playlist/{playlist_id}")
@@ -1209,7 +1209,7 @@ def list_songs(search: Optional[str] = None):
         return []
 
     for f in os.listdir(SONGS_DIR):
-        if not f.endswith(".mp3") or f.startswith("."):
+        if not f.lower().endswith(".mp3") or f.startswith("."):
             continue
         filepath = os.path.join(SONGS_DIR, f)
         try:
@@ -1284,8 +1284,19 @@ def list_songs(search: Optional[str] = None):
                 "bitrate": bitrate,
                 "mtime": stat.st_mtime
             })
-        except Exception:
+        except Exception as e:
+            print(f"[Library] Skipping {f!r}: {e}")
             continue
+
+    # Tags can hold lone surrogates / bad bytes (seen on some Windows setups). One such value used to make
+    # the whole JSON response fail to encode, so the library came back empty while Discover still worked.
+    def _clean(v):
+        if isinstance(v, str):
+            return v.encode("utf-8", "replace").decode("utf-8")
+        if isinstance(v, list):
+            return [_clean(x) for x in v]
+        return v
+    songs = [{k: _clean(v) for k, v in song.items()} for song in songs]
 
     # Sort newest downloaded first
     songs.sort(key=lambda x: x["mtime"], reverse=True)
@@ -1811,6 +1822,81 @@ def stream_audio_live(q: str, request: Request, background_tasks: BackgroundTask
             )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Upstream stream error: {str(e)}")
+
+# ==================== SILENCE DETECTION (for smart transitions) ====================
+SILENCE_CACHE: Dict[str, dict] = {}
+SILENCE_LOCK = Lock()
+
+def analyze_silence(path: str) -> Optional[dict]:
+    """Seconds of silence at the start and end of an audio file, using ffmpeg's silencedetect."""
+    try:
+        key = f"{path}|{os.path.getmtime(path)}|{os.path.getsize(path)}"
+    except OSError:
+        return None
+    with SILENCE_LOCK:
+        if key in SILENCE_CACHE:
+            return SILENCE_CACHE[key]
+
+    ffmpeg_bin = find_ffmpeg()
+    if not ffmpeg_bin:
+        return None
+    try:
+        proc = subprocess.run(
+            [ffmpeg_bin, "-hide_banner", "-nostats", "-i", path,
+             "-af", "silencedetect=noise=-48dB:d=0.3", "-vn", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=60, errors="replace",
+            creationflags=0x08000000 if sys.platform == "win32" else 0,  # no console window
+        )
+    except Exception:
+        return None
+    log = proc.stderr or ""
+
+    m = re.search(r"Duration:\s*(\d+):(\d+):([\d.]+)", log)
+    if not m:
+        return None
+    duration = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+
+    lead = trail = 0.0
+    start = None
+    for line in log.splitlines():
+        ms = re.search(r"silence_start:\s*(-?[\d.]+)", line)
+        me = re.search(r"silence_end:\s*(-?[\d.]+)", line)
+        if ms:
+            start = max(0.0, float(ms.group(1)))
+        elif me and start is not None:
+            end = float(me.group(1))
+            if start <= 0.1:
+                lead = end
+            elif end >= duration - 0.15:
+                trail = duration - start
+            start = None
+    if start is not None:  # silence that runs to the end of the file never reports silence_end
+        trail = duration - start
+
+    # A whole-file "silence" or implausible values mean the detector is unreliable: ignore them
+    if lead + trail >= duration * 0.6:
+        lead = trail = 0.0
+    res = {"lead": round(min(lead, 45.0), 2), "trail": round(min(trail, 45.0), 2), "duration": round(duration, 2)}
+    with SILENCE_LOCK:
+        SILENCE_CACHE[key] = res
+    return res
+
+@app.get("/api/audio/silence")
+def audio_silence(filename: Optional[str] = None, q: Optional[str] = None):
+    """Leading/trailing silence for a library file (filename) or an already-cached stream (q)."""
+    path = None
+    if filename:
+        cand = os.path.realpath(os.path.join(SONGS_DIR, urllib.parse.unquote(filename)))
+        if cand.startswith(os.path.realpath(SONGS_DIR) + os.sep) and os.path.isfile(cand):
+            path = cand
+    elif q:
+        cache_file, _ = get_stream_cache_path(q)
+        if os.path.isfile(cache_file) and os.path.getsize(cache_file) > 100000:
+            path = cache_file
+    if not path:
+        return {"ready": False}
+    res = analyze_silence(path)
+    return {"ready": True, **res} if res else {"ready": False}
 
 @app.api_route("/api/stream/prefetch", methods=["GET", "POST"])
 def prefetch_stream_audio(q: str, background_tasks: BackgroundTasks):
