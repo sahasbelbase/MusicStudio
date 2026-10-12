@@ -114,16 +114,12 @@ hdiutil create \
     -format UDZO \
     "dist/MusicStudio-Installer.dmg"
 
-# Update releases folder
-mkdir -p releases
-cp "dist/MusicStudio-Installer.dmg" "releases/MusicStudio-macOS.dmg"
-
 # Clean staging
 rm -rf dist/dmg_staging
 
 echo ""
 echo "=========================================="
 echo "🎉 SUCCESS: macOS DMG created successfully!"
-echo "📍 Location: $APP_DIR/releases/MusicStudio-macOS.dmg"
-ls -lh "releases/MusicStudio-macOS.dmg"
+echo "📍 Location: $APP_DIR/dist/MusicStudio-Installer.dmg"
+ls -lh "dist/MusicStudio-Installer.dmg"
 echo "=========================================="

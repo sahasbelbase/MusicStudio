@@ -84,3 +84,6 @@ data/play_stats.json
 # Atomic-save scratch and backup copies of the app data files
 *.json.tmp
 *.json.bak
+
+# Built installers are published as GitHub release assets, not committed
+/releases/
