@@ -768,12 +768,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Schedules a whole transition (volume envelopes + effects) on the audio clock.
     // Returns false when Web Audio is unavailable so the caller can fall back.
-    scheduleTransition(outgoingDeck, incomingDeck, plan) {
+    scheduleTransition(outgoingDeck, incomingDeck, plan, delaySec = 0) {
       if (!this.isInitialized || !this.ctx) return false;
       this.resume();
       try {
         const now = this.ctx.currentTime;
-        const t0 = now + 0.03;
+        const t0 = now + 0.03 + delaySec;  // a delayed start lets the transition land exactly on a beat
         const dur = Math.max(0.05, plan.durationMs / 1000);
         const out = this.nodesFor(outgoingDeck);
         const inc = this.nodesFor(incomingDeck);
@@ -792,11 +792,11 @@ document.addEventListener('DOMContentLoaded', () => {
           param.setValueCurveAtTime(vals, t0, dur);
         });
 
-        // Bass swap halfway through: the incoming bass replaces the outgoing bass in one quick move
+        // Bass swap on a bar line: the incoming bass replaces the outgoing bass in one quick move
         out.low.gain.cancelScheduledValues(0);
         inc.low.gain.cancelScheduledValues(0);
-        if (plan.bassSwap) {
-          const swapAt = t0 + dur * 0.5;
+        if (plan.bassSwapAt !== null && plan.bassSwapAt !== undefined) {
+          const swapAt = t0 + plan.bassSwapAt;
           inc.low.gain.setValueAtTime(-26, now);
           inc.low.gain.setValueAtTime(-26, swapAt);
           inc.low.gain.linearRampToValueAtTime(0, swapAt + 0.25);
@@ -818,14 +818,14 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         if (plan.echo) {
-          // Feed the outgoing song's last hit into a tempo-synced echo and let it ring out
-          const hold = dur * plan.echo.hold;
+          // Feed the outgoing song's final beat into a tempo-synced echo and let it ring out
           this.echoDelay.delayTime.setValueAtTime(plan.echo.delay, t0);
           this.echoFeedback.gain.setValueAtTime(plan.echo.feedback, t0);
           out.send.gain.cancelScheduledValues(0);
+          out.send.gain.setValueAtTime(0, now);
           out.send.gain.setValueAtTime(0.9, t0);
-          out.send.gain.setValueAtTime(0.9, t0 + hold);
-          out.send.gain.linearRampToValueAtTime(0, t0 + hold + 0.08);
+          out.send.gain.setValueAtTime(0.9, t0 + plan.echo.closeAt);
+          out.send.gain.linearRampToValueAtTime(0, t0 + plan.echo.closeAt + 0.08);
         }
         return true;
       } catch (e) {
@@ -1008,21 +1008,42 @@ document.addEventListener('DOMContentLoaded', () => {
     return !!(a && b) && album(a) === album(b) && !generic.includes(album(a)) && (a.artist || '') === (b.artist || '');
   }
 
+  // Last value in a sorted list that is <= t
+  function lastAtOrBefore(list, t) {
+    let found = null;
+    for (const x of list || []) {
+      if (x <= t) found = x;
+    }
+    return found;
+  }
+
+  // A musical echo time: a beat, half a beat or a dotted eighth, whichever falls in 0.25–0.6 s
+  function echoDelayFor(beat) {
+    return [beat, beat / 2, beat * 0.75, beat * 2].find(x => x >= 0.25 && x <= 0.6) || 0.375;
+  }
+
   /**
-   * Returns { style, label, durationMs, startBeforeEnd (s before the outgoing music ends), cue (s into the
-   * incoming file), inDelay (0..1 of the duration before the incoming starts), outCurve/inCurve (0..1 -> gain),
-   * bassSwap, filterSweep, lowpassOut, echo, gapless }.
+   * Returns { style, label, durationMs, startAt (outgoing-song time to begin, when its beat grid is known),
+   * startBeforeEnd (fallback: seconds before the music ends), cue (seconds into the incoming file),
+   * inStartSec (when the incoming song starts, relative to the transition start), outCurve/inCurve
+   * (0..1 progress -> gain), bassSwapAt (s), filterSweep, lowpassOut, echo, gapless }.
    */
   function planSmartTransition(outgoingTrack, incomingTrack, isManualSkip = false) {
     const a = getKnownAnalysis(outgoingTrack);
     const b = getKnownAnalysis(incomingTrack);
     const beat = a && a.bpm ? 60 / a.bpm : 0.5;
+    const soundEnd = a ? a.duration - a.trail : null;
+    const downbeats = a ? a.outro_downbeats : [];
+    let cue = b ? (b.lead > 0.3 ? Math.max(0, b.lead - 0.05) : 0) : 0.35;
+    // Start the incoming song on its own first beat, so that beat lands on the outgoing song's grid
+    if (b && b.first_beat !== null && b.first_beat !== undefined && b.first_beat >= b.lead && b.first_beat - b.lead < 2) {
+      cue = Math.max(0, b.first_beat - 0.02);
+    }
     const base = {
-      cue: b ? (b.lead > 0.3 ? Math.max(0, b.lead - 0.05) : 0) : 0.35,
-      inDelay: 0,
+      cue, inStartSec: 0, startAt: null, bassSwapAt: null,
       outCurve: fadeCurves.equalOut,
       inCurve: fadeCurves.equalIn,
-      bassSwap: false, filterSweep: false, lowpassOut: false, echo: null, gapless: false,
+      filterSweep: false, lowpassOut: false, echo: null, gapless: false,
     };
     const plan = (style, label, seconds, startBeforeEnd, extra = {}) =>
       ({ ...base, style, label, durationMs: Math.round(seconds * 1000), startBeforeEnd, ...extra });
@@ -1044,24 +1065,50 @@ document.addEventListener('DOMContentLoaded', () => {
     const outroFade = a ? a.outro_fade : 0;
     const softIntro = b ? b.intro_rise >= 2.5 : false;
 
+    // A transition that starts on the last downbeat before `from` and runs to the end of the music
+    const onDownbeat = (from, maxLen) => {
+      const d = soundEnd !== null ? lastAtOrBefore(downbeats, from + 0.01) : null;
+      return d !== null && soundEnd - d <= maxLen ? { startAt: d, seconds: soundEnd - d } : null;
+    };
+
     // 1. The song already fades itself out: let the next one rise under that fade
     if (outroFade >= 4) {
       const overlap = Math.min(10, outroFade);
-      return plan('natural_fade', 'Natural fade', overlap, overlap, {
+      const grid = onDownbeat(soundEnd - overlap, 12);
+      const seconds = grid ? grid.seconds : overlap;
+      return plan('natural_fade', 'Natural fade', seconds, overlap, {
+        startAt: grid ? grid.startAt : null,
         outCurve: fadeCurves.linearOut,
         inCurve: softIntro ? fadeCurves.linearIn : fadeCurves.equalIn,
-        bassSwap: distance < 2 && !tempoClash,
+        bassSwapAt: distance < 2 && !tempoClash ? seconds / 2 : null,
       });
     }
 
-    // 2. Different worlds or clashing tempos: never run two grooves together. Keep the outgoing
-    //    song's last hit, echo it out on the beat, and drop the next song in clean underneath.
+    // 2. Different worlds or clashing tempos: never run two grooves together. Let the outgoing song
+    //    land its last downbeat, echo that final beat out in tempo, and drop the next song in on the
+    //    following beat.
     if (distance === 2 || tempoClash) {
-      return plan('echo_out', 'Echo out', 2.4, 0.55, {
-        inDelay: 0.2,
-        outCurve: t => (t < 0.22 ? 1 : Math.max(0, 1 - (t - 0.22) / 0.12)),
-        inCurve: t => (t < 0.2 ? 0 : fadeCurves.equalIn(Math.min(1, (t - 0.2) / 0.19))),
-        echo: { delay: Math.min(0.6, Math.max(0.25, beat / 2)), feedback: 0.5, hold: 0.22 },
+      const B = Math.min(0.75, Math.max(0.3, beat));
+      const hit = soundEnd !== null
+        ? (lastAtOrBefore(downbeats, soundEnd - 0.12) ?? lastAtOrBefore(a.outro_beats, soundEnd - 0.12))
+        : null;
+      const cut = B;                       // the final hit, one beat after the transition starts
+      const inStart = cut + B;             // the next song drops on the following beat
+      const seconds = inStart + 0.5 * B + 1.2;
+      return plan('echo_out', 'Echo out', seconds, cut + 0.5 * B, {
+        startAt: hit !== null ? hit - B : null,
+        inStartSec: inStart,
+        outCurve: t => {
+          const x = t * seconds;
+          if (x < cut + 0.5 * B) return 1;
+          if (x > cut + 1.5 * B) return 0;
+          return Math.cos(((x - cut - 0.5 * B) / B) * Math.PI / 2);
+        },
+        inCurve: t => {
+          const x = t * seconds;
+          return x < inStart ? 0 : Math.sin(Math.min(1, (x - inStart) / (0.5 * B)) * Math.PI / 2);
+        },
+        echo: { delay: echoDelayFor(B), feedback: 0.45, closeAt: cut + 0.05 },
       });
     }
 
@@ -1070,17 +1117,33 @@ document.addEventListener('DOMContentLoaded', () => {
       return plan('ambient_morph', 'Ambient morph', 10, 10, { lowpassOut: true });
     }
 
-    // Blend over 16 beats of the outgoing song (8 s at 120 BPM) when tempos line up; shorter otherwise,
-    // so two slightly different tempos are not heard drifting against each other
-    const blendLen = tempoMatch ? Math.min(10, Math.max(6, beat * 16)) : 5;
+    // Blend over 16 beats when tempos line up (8 s at 120 BPM), 8 beats otherwise so two slightly
+    // different tempos are not heard drifting; start on a downbeat and swap the bass on a bar line
+    const blendBeats = tempoMatch ? 16 : 8;
+    const blendLen = a && a.bpm ? Math.min(10, Math.max(4, beat * blendBeats)) : (tempoMatch ? 8 : 5);
+    const grid = onDownbeat(soundEnd !== null ? soundEnd - blendLen : 0, blendLen + 4 * beat);
+    const seconds = grid ? grid.seconds : blendLen;
+    const extra = {
+      startAt: grid ? grid.startAt : null,
+      bassSwapAt: grid ? Math.min(seconds - 0.3, (blendBeats / 2) * beat) : seconds / 2,
+    };
 
-    // 4. Club music at compatible tempos: filter sweep plus bass swap
+    // 4. Club music: filter sweep plus bass swap
     if (famOut === 'electronic' && famIn === 'electronic') {
-      return plan('filter_sweep', 'DJ filter sweep', blendLen, blendLen, { filterSweep: true, bassSwap: true });
+      return plan('filter_sweep', 'DJ filter sweep', seconds, seconds, { ...extra, filterSweep: true });
     }
 
     // 5. Everything else that fits together: equal-power blend with a bass swap
-    return plan('bass_swap_blend', tempoMatch ? 'Beat blend' : 'Smooth blend', blendLen, blendLen, { bassSwap: true });
+    return plan('bass_swap_blend', tempoMatch ? 'Beat blend' : 'Smooth blend', seconds, seconds, extra);
+  }
+
+  // Same song, even when one copy came from the queue and the other from the library list
+  function sameTrack(x, y) {
+    if (!x || !y) return false;
+    if (x === y) return true;
+    if (x.filename && y.filename) return x.filename === y.filename;
+    return normalizeSongString(x.title) === normalizeSongString(y.title) &&
+      normalizeSongString(x.artist) === normalizeSongString(y.artist);
   }
 
   function getEffectiveAudioDuration() {
@@ -1197,7 +1260,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   let activeTransitionPlan = null;
-  function startCrossfadeAnimation(outgoingDeck, incomingDeck, plan) {
+  function startCrossfadeAnimation(outgoingDeck, incomingDeck, plan, delaySec = 0) {
     if (crossfadeAnimId) cancelAnimationFrame(crossfadeAnimId);
     if (crossfadeTimer) clearTimeout(crossfadeTimer);
     isCrossfading = true;
@@ -1215,16 +1278,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Preferred: the whole transition scheduled on the audio clock. requestAnimationFrame stops while
     // the window is minimised, which used to freeze transitions halfway.
-    if (djAudioFx.init() && djAudioFx.scheduleTransition(outgoingDeck, incomingDeck, plan)) {
+    if (djAudioFx.init() && djAudioFx.scheduleTransition(outgoingDeck, incomingDeck, plan, delaySec)) {
       crossfadeOnAudioClock = true;
       outgoingDeck.volume = deckLevel(outgoingDeck);
       incomingDeck.volume = deckLevel(incomingDeck);
-      crossfadeTimer = setTimeout(() => finishCrossfade(outgoingDeck, incomingDeck), plan.durationMs + 60);
+      crossfadeTimer = setTimeout(() => finishCrossfade(outgoingDeck, incomingDeck), delaySec * 1000 + plan.durationMs + 60);
       return;
     }
 
     // Fallback without Web Audio: animate the element volumes
-    const startTime = performance.now();
+    const startTime = performance.now() + delaySec * 1000;
     function step(now) {
       if (!isCrossfading) return;
       const t = Math.min(1, Math.max(0, (now - startTime) / plan.durationMs));
@@ -1272,13 +1335,18 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   let isAutoCrossfadeInProgress = false;
+  let pendingTransition = null; // { track, plan, delaySec } handed from the auto-trigger to transitionToAudio
   function transitionToAudio(audioUrl, durationOrTrack, datasetMeta = null) {
     const outgoingDeck = activeDeck;
     const incomingDeck = standbyDeck;
 
     const incomingTrack = (durationOrTrack && typeof durationOrTrack === 'object') ? durationOrTrack : null;
-    // Callers update the "current song" before calling us, so the outgoing song is read from its deck
-    const plan = planSmartTransition(outgoingDeck._track || null, incomingTrack, isManualTransitionRequested);
+    // The auto-trigger already timed this transition to the beat; otherwise plan it now.
+    // Callers update the "current song" before calling us, so the outgoing song is read from its deck.
+    const pending = pendingTransition && sameTrack(pendingTransition.track, incomingTrack) ? pendingTransition : null;
+    pendingTransition = null;
+    const plan = pending ? pending.plan : planSmartTransition(outgoingDeck._track || null, incomingTrack, isManualTransitionRequested);
+    const delaySec = pending ? pending.delaySec : 0;
     isManualTransitionRequested = false;
     const isAutoCrossfade = isAutoCrossfadeInProgress;
     isAutoCrossfadeInProgress = false;
@@ -1300,31 +1368,17 @@ document.addEventListener('DOMContentLoaded', () => {
       activeDeck = incomingDeck;
       standbyDeck = outgoingDeck;
 
-      if (plan.inDelay > 0) {
-        // Echo-out: the outgoing song finishes and echoes first; the next one drops in on the beat
-        startCrossfadeAnimation(outgoingDeck, incomingDeck, plan);
-        setTimeout(() => {
-          if (activeDeck !== incomingDeck) return; // superseded by another change
-          const p = incomingDeck.play();
-          if (p !== undefined) p.catch(() => updatePlayIcon(false));
-        }, plan.durationMs * plan.inDelay);
-        return;
-      }
-
-      const playPromise = incomingDeck.play();
-      if (playPromise !== undefined) {
-        playPromise.then(() => {
-          startCrossfadeAnimation(outgoingDeck, incomingDeck, plan);
-        }).catch((err) => {
-          console.warn('Playback on incoming deck failed:', err);
-          activeDeck = outgoingDeck;
-          standbyDeck = incomingDeck;
-          outgoingDeck.volume = deckLevel(outgoingDeck);
-          updatePlayIcon(false);
-        });
-      } else {
-        startCrossfadeAnimation(outgoingDeck, incomingDeck, plan);
-      }
+      startCrossfadeAnimation(outgoingDeck, incomingDeck, plan, delaySec);
+      setTimeout(() => {
+        if (activeDeck !== incomingDeck) return; // superseded by another change
+        const p = incomingDeck.play();
+        if (p !== undefined) {
+          p.catch((err) => {
+            console.warn('Playback on incoming deck failed:', err);
+            updatePlayIcon(false);
+          });
+        }
+      }, (delaySec + plan.inStartSec) * 1000);
     } else {
       cancelCrossfade();
       loadDeckSource(activeDeck, audioUrl, datasetMeta);
@@ -5034,10 +5088,13 @@ document.addEventListener('DOMContentLoaded', () => {
         const nextTrackObj = nextItem ? (nextItem.track || nextItem.song) : null;
         const plan = planSmartTransition(activeDeck._track || curTrackObj, nextTrackObj, false);
         if (!plan.gapless) { // gapless album playback waits for the real end of the file
-          const a = getKnownAnalysis(curTrackObj);
+          const a = getKnownAnalysis(activeDeck._track || curTrackObj);
           const soundEnd = effectiveDur - (a ? a.trail : 0);
-          const startAt = soundEnd - Math.min(plan.startBeforeEnd, soundEnd * 0.3);
-          if (activeDeck.currentTime >= startAt && (effectiveDur - activeDeck.currentTime) > 0.2 && activeDeck.currentTime > 3) {
+          const startAt = Math.max(soundEnd * 0.7, plan.startAt !== null ? plan.startAt : soundEnd - plan.startBeforeEnd);
+          // timeupdate only fires every ~250 ms, so look ahead and schedule the exact start on the audio clock
+          const lead = startAt - activeDeck.currentTime;
+          if (lead <= 1.0 && (effectiveDur - activeDeck.currentTime) > 0.2 && activeDeck.currentTime > 3) {
+            pendingTransition = { track: nextTrackObj, plan, delaySec: Math.max(0, lead) };
             hasTriggeredAutoCrossfade = true;
             isAutoCrossfadeInProgress = true;
             playNextTrack();

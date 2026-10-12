@@ -77,11 +77,11 @@ def _silence_and_loudness(ffmpeg_bin: str, path: str) -> Optional[dict]:
     }
 
 
-def _envelopes(ffmpeg_bin: str, path: str) -> Tuple[List[float], List[float]]:
+def _envelopes(ffmpeg_bin: str, path: str) -> Tuple[List[float], List[float], List[float]]:
     """
-    Mean absolute amplitude per 10 ms frame for the full signal, plus an onset-strength curve
-    built from separate low (kick) and high (snare/hat) bands, which tracks the beat far better
-    than full-band energy on dense mixes.
+    Mean absolute amplitude per 10 ms frame for the full signal, an onset-strength curve built from
+    separate low (kick) and high (snare/hat) bands, which tracks the beat far better than full-band
+    energy on dense mixes, and the low-band onsets alone (kicks mark downbeats).
     """
     graph = ("[0:a]aformat=channel_layouts=mono,aresample=%d,asplit=3[f][l][h];"
              "[l]lowpass=f=150[lo];[h]highpass=f=3000[hi];"
@@ -107,8 +107,9 @@ def _envelopes(ffmpeg_bin: str, path: str) -> Tuple[List[float], List[float]]:
         logs = [math.log(e + 1.0) for e in env]
         return [0.0] + [max(0.0, logs[k] - logs[k - 1]) for k in range(1, len(logs))]
 
-    onset = [x + y for x, y in zip(rises(low), rises(high))]
-    return full, onset
+    low_onset = rises(low)
+    onset = [x + y for x, y in zip(low_onset, rises(high))]
+    return full, onset, low_onset
 
 
 def _db(amplitude: float) -> float:
@@ -183,6 +184,46 @@ def _tempo(onset_env: List[float], lead: float, sound_end: float) -> Tuple[Optio
     return round(60.0 * ENV_RATE / (best + shift), 1), round(max(0.0, corr(best)), 3)
 
 
+def _beat_grid(onset: List[float], low_onset: List[float], bpm: float,
+               t_from: float, t_to: float) -> Tuple[List[float], List[float]]:
+    """
+    Beat times (s) between t_from and t_to at the given tempo, phase-locked to the strongest onsets,
+    plus the downbeats: the one beat in four whose kicks hit hardest. Transitions use these so a song
+    finishes on its last downbeat and the next one comes in on the beat.
+    """
+    period = 60.0 * ENV_RATE / bpm
+    f0, f1 = max(1, int(t_from * ENV_RATE)), min(len(onset) - 2, int(t_to * ENV_RATE))
+    if f1 - f0 < 4 * period:
+        return [], []
+
+    def strength(env: List[float], idx: int) -> float:
+        return max(env[idx - 1:idx + 2])          # +-10 ms tolerance
+
+    best_phase, best_score = 0, -1.0
+    for phase in range(int(period)):
+        score, k = 0.0, 0
+        while True:
+            idx = int(round(f0 + phase + k * period))
+            if idx > f1:
+                break
+            score += strength(onset, idx)
+            k += 1
+        if score > best_score:
+            best_phase, best_score = phase, score
+
+    frames = []
+    k = 0
+    while True:
+        idx = int(round(f0 + best_phase + k * period))
+        if idx > f1:
+            break
+        frames.append(idx)
+        k += 1
+    bar = max(range(4), key=lambda m: sum(strength(low_onset, f) for i, f in enumerate(frames) if i % 4 == m))
+    beats = [round(f / ENV_RATE, 3) for f in frames]
+    return beats, [b for i, b in enumerate(beats) if i % 4 == bar]
+
+
 def analyze(path: str, ffmpeg_bin: Optional[str]) -> Optional[dict]:
     """Full analysis for one audio file, or None if ffmpeg is unavailable or the file is unreadable."""
     if not ffmpeg_bin:
@@ -203,15 +244,21 @@ def analyze(path: str, ffmpeg_bin: Optional[str]) -> Optional[dict]:
             if res is None:
                 return None
             sound_end = res["duration"] - res["trail"]
-            res.update(bpm=None, bpm_confidence=0.0, outro_fade=0.0, intro_rise=0.0)
+            res.update(bpm=None, bpm_confidence=0.0, outro_fade=0.0, intro_rise=0.0,
+                       outro_beats=[], outro_downbeats=[], first_beat=None)
             if res["duration"] <= MAX_ENVELOPE_SECONDS:
-                env, onset = _envelopes(ffmpeg_bin, path)
+                env, onset, low_onset = _envelopes(ffmpeg_bin, path)
                 shape = _energy_shape(env, res["lead"], sound_end)
                 if shape:
                     _, outro_fade, intro_rise = shape
                     res.update(outro_fade=round(outro_fade, 1), intro_rise=round(intro_rise, 1))
                 bpm, conf = _tempo(onset, res["lead"], sound_end)
                 res.update(bpm=bpm, bpm_confidence=conf)
+                if bpm:
+                    out_beats, out_downs = _beat_grid(onset, low_onset, bpm, sound_end - 24, sound_end)
+                    in_beats, _ = _beat_grid(onset, low_onset, bpm, res["lead"], res["lead"] + 12)
+                    res.update(outro_beats=out_beats, outro_downbeats=out_downs,
+                               first_beat=in_beats[0] if in_beats else None)
         except Exception:
             return None
         with _locks_guard:
