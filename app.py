@@ -14,6 +14,7 @@ import shutil
 import base64
 import hashlib
 import urllib.request
+import urllib.error
 import urllib.parse
 from ssl_helper import safe_urlopen
 import subprocess
@@ -46,6 +47,7 @@ from download_playlist import (
     DEFAULT_OUTPUT_FOLDER,
 )
 import discovery
+import audio_analysis
 from fix_metadata import process_file as enrich_single_file, fetch_itunes_metadata
 
 app = FastAPI(title="Music Studio")
@@ -54,6 +56,10 @@ app = FastAPI(title="Music Studio")
 def _silent_engine_update():
     """Keep yt-dlp current in the background; failures are ignored (the bundled copy still works)."""
     def run():
+        try:
+            updater.ensure_js_runtime()  # fetch QuickJS if this machine has no deno/node/bun
+        except Exception:
+            pass
         try:
             if updater.check().get("update_available"):
                 updater.update()
@@ -802,7 +808,7 @@ def search_explore(q: str, type: Optional[str] = "all"):
     tracks = []
     albums = []
     if type in ("all", "tracks"):
-        tracks = discovery.search_tracks(clean_q, limit=25)
+        tracks = discovery.search_tracks_everywhere(clean_q, limit=25)
     if type in ("all", "albums"):
         albums = discovery.search_albums(clean_q, limit=12)
 
@@ -1674,14 +1680,23 @@ def resolve_stream_url(query: str) -> dict:
         ydl_opts['ffmpeg_location'] = ffmpeg_loc
 
     search_query = query if query.startswith("http") else f"ytsearch1:{query}"
-    import yt_dlp as _ytdlp  # re-resolved so in-app updates take effect
-    ydl_opts['js_runtimes'] = updater.js_runtimes()
-    with _ytdlp.YoutubeDL(ydl_opts) as ydl:
-        extracted = ydl.extract_info(search_query, download=False)
-        entry = extracted['entries'][0] if 'entries' in extracted else extracted
-        stream_url = entry.get('url')
-        duration = entry.get('duration') or 0
-        title = entry.get('title') or query
+
+    def extract():
+        import yt_dlp as _ytdlp  # re-resolved so in-app updates take effect
+        ydl_opts['js_runtimes'] = updater.js_runtimes()
+        with _ytdlp.YoutubeDL(ydl_opts) as ydl:
+            return ydl.extract_info(search_query, download=False)
+
+    try:
+        extracted = extract()
+    except Exception as e:
+        if not updater.heal(e):  # newer yt-dlp / JS runtime, then one retry
+            raise
+        extracted = extract()
+    entry = extracted['entries'][0] if 'entries' in extracted else extracted
+    stream_url = entry.get('url')
+    duration = entry.get('duration') or 0
+    title = entry.get('title') or query
 
     if not stream_url:
         raise ValueError("No audio stream available")
@@ -1762,8 +1777,17 @@ def stream_audio_live(q: str, request: Request, background_tasks: BackgroundTask
         req_headers['Range'] = range_header
 
     try:
-        req = urllib.request.Request(stream_url, headers=req_headers)
-        upstream = safe_urlopen(req, timeout=10)
+        try:
+            upstream = safe_urlopen(urllib.request.Request(stream_url, headers=req_headers), timeout=10)
+        except urllib.error.HTTPError as e:
+            if e.code != 403:
+                raise
+            # Stream URLs expire or get refused: forget the cached one and resolve a fresh URL once
+            with STREAM_CACHE_LOCK:
+                STREAM_CACHE.pop(q.strip().lower(), None)
+            stream_info = resolve_stream_url(q)
+            stream_url = stream_info['url']
+            upstream = safe_urlopen(urllib.request.Request(stream_url, headers=req_headers), timeout=10)
         status_code = upstream.status
 
         resp_headers = {
@@ -1844,67 +1868,10 @@ def stream_audio_live(q: str, request: Request, background_tasks: BackgroundTask
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Upstream stream error: {str(e)}")
 
-# ==================== SILENCE DETECTION (for smart transitions) ====================
-SILENCE_CACHE: Dict[str, dict] = {}
-SILENCE_LOCK = Lock()
-
-def analyze_silence(path: str) -> Optional[dict]:
-    """Seconds of silence at the start and end of an audio file, using ffmpeg's silencedetect."""
-    try:
-        key = f"{path}|{os.path.getmtime(path)}|{os.path.getsize(path)}"
-    except OSError:
-        return None
-    with SILENCE_LOCK:
-        if key in SILENCE_CACHE:
-            return SILENCE_CACHE[key]
-
-    ffmpeg_bin = find_ffmpeg()
-    if not ffmpeg_bin:
-        return None
-    try:
-        proc = subprocess.run(
-            [ffmpeg_bin, "-hide_banner", "-nostats", "-i", path,
-             "-af", "silencedetect=noise=-48dB:d=0.3", "-vn", "-f", "null", "-"],
-            capture_output=True, text=True, timeout=60, errors="replace",
-            creationflags=0x08000000 if sys.platform == "win32" else 0,  # no console window
-        )
-    except Exception:
-        return None
-    log = proc.stderr or ""
-
-    m = re.search(r"Duration:\s*(\d+):(\d+):([\d.]+)", log)
-    if not m:
-        return None
-    duration = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
-
-    lead = trail = 0.0
-    start = None
-    for line in log.splitlines():
-        ms = re.search(r"silence_start:\s*(-?[\d.]+)", line)
-        me = re.search(r"silence_end:\s*(-?[\d.]+)", line)
-        if ms:
-            start = max(0.0, float(ms.group(1)))
-        elif me and start is not None:
-            end = float(me.group(1))
-            if start <= 0.1:
-                lead = end
-            elif end >= duration - 0.15:
-                trail = duration - start
-            start = None
-    if start is not None:  # silence that runs to the end of the file never reports silence_end
-        trail = duration - start
-
-    # A whole-file "silence" or implausible values mean the detector is unreliable: ignore them
-    if lead + trail >= duration * 0.6:
-        lead = trail = 0.0
-    res = {"lead": round(min(lead, 45.0), 2), "trail": round(min(trail, 45.0), 2), "duration": round(duration, 2)}
-    with SILENCE_LOCK:
-        SILENCE_CACHE[key] = res
-    return res
-
-@app.get("/api/audio/silence")
-def audio_silence(filename: Optional[str] = None, q: Optional[str] = None):
-    """Leading/trailing silence for a library file (filename) or an already-cached stream (q)."""
+# ==================== TRACK ANALYSIS (for smart transitions) ====================
+@app.get("/api/audio/analysis")
+def audio_analysis_route(filename: Optional[str] = None, q: Optional[str] = None):
+    """Silence, loudness, tempo and intro/outro shape for a library file (filename) or a cached stream (q)."""
     path = None
     if filename:
         cand = os.path.realpath(os.path.join(SONGS_DIR, urllib.parse.unquote(filename)))
@@ -1916,7 +1883,7 @@ def audio_silence(filename: Optional[str] = None, q: Optional[str] = None):
             path = cache_file
     if not path:
         return {"ready": False}
-    res = analyze_silence(path)
+    res = audio_analysis.analyze(path, find_ffmpeg())
     return {"ready": True, **res} if res else {"ready": False}
 
 @app.api_route("/api/stream/prefetch", methods=["GET", "POST"])

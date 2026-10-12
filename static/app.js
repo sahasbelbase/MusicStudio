@@ -190,17 +190,13 @@ document.addEventListener('DOMContentLoaded', () => {
         };
       }
       if (prop === 'play') {
-        return () => {
-          if (isCrossfading && crossfadeOutgoingDeck && !crossfadeOutgoingDeck.paused) {
-            crossfadeOutgoingDeck.play().catch(() => {});
-          }
-          return activeDeck ? activeDeck.play() : Promise.resolve();
-        };
+        return () => (activeDeck ? activeDeck.play() : Promise.resolve());
       }
       if (prop === 'pause') {
         return () => {
-          if (isCrossfading && crossfadeOutgoingDeck) {
-            crossfadeOutgoingDeck.pause();
+          // Pausing mid-transition settles on the new song rather than freezing two songs half-mixed
+          if (isCrossfading && crossfadeOutgoingDeck && crossfadeIncomingDeck) {
+            finishCrossfade(crossfadeOutgoingDeck, crossfadeIncomingDeck);
           }
           if (activeDeck) activeDeck.pause();
         };
@@ -222,10 +218,14 @@ document.addEventListener('DOMContentLoaded', () => {
       if (prop === 'volume') {
         currentMasterVolume = Math.max(0, Math.min(value, 1));
         if (isCrossfading && crossfadeOutgoingDeck && crossfadeIncomingDeck) {
-          crossfadeOutgoingDeck.volume = currentMasterVolume * Math.cos(crossfadeProgress * 0.5 * Math.PI);
-          crossfadeIncomingDeck.volume = currentMasterVolume * Math.sin(crossfadeProgress * 0.5 * Math.PI);
+          // Audio-clock transitions shape the mix with gain nodes, so element volumes stay at the deck level;
+          // the volume-animation fallback picks the new master level up on its next frame
+          if (crossfadeOnAudioClock) {
+            crossfadeOutgoingDeck.volume = deckLevel(crossfadeOutgoingDeck);
+            crossfadeIncomingDeck.volume = deckLevel(crossfadeIncomingDeck);
+          }
         } else {
-          if (activeDeck) activeDeck.volume = currentMasterVolume;
+          if (activeDeck) activeDeck.volume = deckLevel(activeDeck);
           if (standbyDeck) standbyDeck.volume = 0;
         }
         return true;
@@ -618,6 +618,8 @@ document.addEventListener('DOMContentLoaded', () => {
     sourceB: null,
     filterA: null,
     filterB: null,
+    lowA: null,
+    lowB: null,
     gainA: null,
     gainB: null,
     echoSendA: null,
@@ -653,6 +655,15 @@ document.addEventListener('DOMContentLoaded', () => {
         this.gainB = this.ctx.createGain();
         this.gainB.gain.value = 1.0;
 
+        // Per-deck low shelf for the bass swap (-26 dB below ~180 Hz = kick and bassline out)
+        this.lowA = this.ctx.createBiquadFilter();
+        this.lowB = this.ctx.createBiquadFilter();
+        [this.lowA, this.lowB].forEach(f => {
+          f.type = 'lowshelf';
+          f.frequency.value = 180;
+          f.gain.value = 0;
+        });
+
         // Master Output
         this.masterGain = this.ctx.createGain();
         this.masterGain.gain.value = 1.0;
@@ -674,14 +685,16 @@ document.addEventListener('DOMContentLoaded', () => {
         this.echoFilter.frequency.value = 2600; // warm tape delay color
 
         // Wire Deck A
-        this.sourceA.connect(this.filterA);
+        this.sourceA.connect(this.lowA);
+        this.lowA.connect(this.filterA);
         this.filterA.connect(this.gainA);
         this.gainA.connect(this.masterGain);
         this.sourceA.connect(this.echoSendA);
         this.echoSendA.connect(this.echoDelay);
 
         // Wire Deck B
-        this.sourceB.connect(this.filterB);
+        this.sourceB.connect(this.lowB);
+        this.lowB.connect(this.filterB);
         this.filterB.connect(this.gainB);
         this.gainB.connect(this.masterGain);
         this.sourceB.connect(this.echoSendB);
@@ -732,7 +745,94 @@ document.addEventListener('DOMContentLoaded', () => {
           this.echoSendB.gain.cancelScheduledValues(t);
           this.echoSendB.gain.setValueAtTime(0, t);
         }
+        [this.gainA, this.gainB].forEach(g => {
+          g.gain.cancelScheduledValues(0);
+          g.gain.setValueAtTime(1, t);
+        });
+        [this.lowA, this.lowB].forEach(f => {
+          f.gain.cancelScheduledValues(0);
+          f.gain.setValueAtTime(0, t);
+        });
       } catch (e) {}
+    },
+
+    nodesFor(deck) {
+      const a = deck === rawDeckA;
+      return {
+        gain: a ? this.gainA : this.gainB,
+        filter: a ? this.filterA : this.filterB,
+        low: a ? this.lowA : this.lowB,
+        send: a ? this.echoSendA : this.echoSendB,
+      };
+    },
+
+    // Schedules a whole transition (volume envelopes + effects) on the audio clock.
+    // Returns false when Web Audio is unavailable so the caller can fall back.
+    scheduleTransition(outgoingDeck, incomingDeck, plan) {
+      if (!this.isInitialized || !this.ctx) return false;
+      this.resume();
+      try {
+        const now = this.ctx.currentTime;
+        const t0 = now + 0.03;
+        const dur = Math.max(0.05, plan.durationMs / 1000);
+        const out = this.nodesFor(outgoingDeck);
+        const inc = this.nodesFor(incomingDeck);
+
+        const steps = 96;
+        const outVals = new Float32Array(steps);
+        const inVals = new Float32Array(steps);
+        for (let i = 0; i < steps; i++) {
+          const t = i / (steps - 1);
+          outVals[i] = Math.max(0, Math.min(1, plan.outCurve(t)));
+          inVals[i] = Math.max(0, Math.min(1, plan.inCurve(t)));
+        }
+        [[out.gain.gain, outVals], [inc.gain.gain, inVals]].forEach(([param, vals]) => {
+          param.cancelScheduledValues(0);
+          param.setValueAtTime(vals[0], now);
+          param.setValueCurveAtTime(vals, t0, dur);
+        });
+
+        // Bass swap halfway through: the incoming bass replaces the outgoing bass in one quick move
+        out.low.gain.cancelScheduledValues(0);
+        inc.low.gain.cancelScheduledValues(0);
+        if (plan.bassSwap) {
+          const swapAt = t0 + dur * 0.5;
+          inc.low.gain.setValueAtTime(-26, now);
+          inc.low.gain.setValueAtTime(-26, swapAt);
+          inc.low.gain.linearRampToValueAtTime(0, swapAt + 0.25);
+          out.low.gain.setValueAtTime(0, now);
+          out.low.gain.setValueAtTime(0, swapAt);
+          out.low.gain.linearRampToValueAtTime(-26, swapAt + 0.25);
+        } else {
+          inc.low.gain.setValueAtTime(0, now);
+          out.low.gain.setValueAtTime(0, now);
+        }
+
+        if (plan.filterSweep) {
+          this.applyFilterSweep(outgoingDeck, incomingDeck, dur);
+        } else if (plan.lowpassOut) {
+          out.filter.type = 'lowpass';
+          out.filter.frequency.cancelScheduledValues(0);
+          out.filter.frequency.setValueAtTime(22050, t0);
+          out.filter.frequency.exponentialRampToValueAtTime(900, t0 + dur * 0.9);
+        }
+
+        if (plan.echo) {
+          // Feed the outgoing song's last hit into a tempo-synced echo and let it ring out
+          const hold = dur * plan.echo.hold;
+          this.echoDelay.delayTime.setValueAtTime(plan.echo.delay, t0);
+          this.echoFeedback.gain.setValueAtTime(plan.echo.feedback, t0);
+          out.send.gain.cancelScheduledValues(0);
+          out.send.gain.setValueAtTime(0.9, t0);
+          out.send.gain.setValueAtTime(0.9, t0 + hold);
+          out.send.gain.linearRampToValueAtTime(0, t0 + hold + 0.08);
+        }
+        return true;
+      } catch (e) {
+        console.warn('Scheduling transition on the audio clock failed:', e);
+        this.resetFilters();
+        return false;
+      }
     },
 
     applyFilterSweep(outgoingDeck, incomingDeck, durationSec) {
@@ -759,162 +859,228 @@ document.addEventListener('DOMContentLoaded', () => {
         inFilter.frequency.exponentialRampToValueAtTime(20, t + dur * 0.95);
       } catch (e) {}
     },
-
-    triggerEchoOut(outgoingDeck, durationSec = 2.0) {
-      if (!this.isInitialized || !this.ctx) return;
-      this.resume();
-      const t = this.ctx.currentTime;
-      const isOutgoingA = (outgoingDeck === rawDeckA);
-      const sendNode = isOutgoingA ? this.echoSendA : this.echoSendB;
-
-      try {
-        sendNode.gain.cancelScheduledValues(t);
-        sendNode.gain.setValueAtTime(0.85, t);
-        sendNode.gain.setValueAtTime(0.85, t + 0.28);
-        sendNode.gain.linearRampToValueAtTime(0, t + 0.55);
-      } catch (e) {}
-    },
-
-    triggerVinylBrake(deck, durationSec = 0.38) {
-      if (!deck) return;
-      try {
-        const startRate = deck.playbackRate || 1.0;
-        const startTime = performance.now();
-        const durMs = durationSec * 1000;
-        const brakeStep = (now) => {
-          const progress = Math.min(1, (now - startTime) / durMs);
-          deck.playbackRate = Math.max(0.06, startRate * (1 - Math.pow(progress, 1.8)));
-          if (progress < 1) {
-            requestAnimationFrame(brakeStep);
-          } else {
-            deck.playbackRate = 1.0;
-            deck.pause();
-          }
-        };
-        requestAnimationFrame(brakeStep);
-      } catch (e) {}
-    },
-
-    playRiserSweep(durationSec = 2.2) {
-      if (!this.isInitialized || !this.ctx) return;
-      try {
-        this.resume();
-        const sampleRate = this.ctx.sampleRate;
-        const length = sampleRate * durationSec;
-        const buffer = this.ctx.createBuffer(1, length, sampleRate);
-        const data = buffer.getChannelData(0);
-        let b0 = 0, b1 = 0, b2 = 0;
-        for (let i = 0; i < length; i++) {
-          const white = Math.random() * 2 - 1;
-          b0 = 0.99886 * b0 + white * 0.0555179;
-          b1 = 0.99332 * b1 + white * 0.0750759;
-          b2 = 0.96900 * b2 + white * 0.1538520;
-          data[i] = (b0 + b1 + b2 + white * 0.1) * 0.18;
-        }
-
-        const source = this.ctx.createBufferSource();
-        source.buffer = buffer;
-
-        const bandpass = this.ctx.createBiquadFilter();
-        bandpass.type = 'bandpass';
-        bandpass.Q.value = 3.2;
-
-        const gainNode = this.ctx.createGain();
-        const t = this.ctx.currentTime;
-
-        bandpass.frequency.setValueAtTime(320, t);
-        bandpass.frequency.exponentialRampToValueAtTime(3400, t + durationSec * 0.9);
-
-        gainNode.gain.setValueAtTime(0.001, t);
-        gainNode.gain.exponentialRampToValueAtTime(0.35, t + durationSec * 0.85);
-        gainNode.gain.linearRampToValueAtTime(0.001, t + durationSec);
-
-        source.connect(bandpass);
-        bandpass.connect(gainNode);
-        gainNode.connect(this.masterGain);
-
-        source.start(t);
-        source.stop(t + durationSec);
-      } catch (e) {}
-    }
   };
 
-  // ==================== SMART HOOK & INTRO/OUTRO CUEING PLANNER ====================
+  // ==================== SMART TRANSITION ENGINE ====================
+  // Each song change is planned from measured audio (silence, loudness, tempo, how the outro fades and
+  // how the intro builds) plus genre, following DJ practice:
+  //   - songs that fit together: equal-power blend with a bass swap (never two basslines at once)
+  //   - big genre or tempo jumps (hip-hop -> country): echo the outgoing song out, bring the next in clean
+  //   - a song that already fades itself out: let the next one rise under that fade
+  //   - consecutive tracks of one album: gapless, as the artist intended
+  // Silence at either end is skipped, and levels are matched so a quiet song never follows a loud one.
 
-  function getGenreTransitionDuration(trackOrSong) {
-    if (!trackOrSong) return 5.5;
-    const genre = (trackOrSong.genre || resolveSongGenreForTransition(trackOrSong) || '').toLowerCase();
-    if (genre.includes('electronic') || genre.includes('edm') || genre.includes('dance') || genre.includes('house')) {
-      return 5.0; // Punchy club blend
+  const LOUDNESS_TARGET_LUFS = -12;
+  const analysisCache = new Map();
+
+  function analysisInfo(track) {
+    if (!track || track.is_android_mediastore || track.is_local_device) return null;
+    if (track.filename) {
+      return { key: 'f:' + track.filename, url: `/api/audio/analysis?filename=${encodeURIComponent(track.filename)}` };
     }
-    if (genre.includes('hip-hop') || genre.includes('rap') || genre.includes('trap')) {
-      return 4.2; // Clean hip-hop drop
+    const q = track.query || (track.title ? `${track.title} ${track.artist}` : '');
+    return q ? { key: 'q:' + q, url: `/api/audio/analysis?q=${encodeURIComponent(q)}` } : null;
+  }
+
+  function getKnownAnalysis(track) {
+    const info = analysisInfo(track);
+    return info ? (analysisCache.get(info.key) || null) : null;
+  }
+
+  async function loadAnalysis(track) {
+    const info = analysisInfo(track);
+    if (!info) return null;
+    if (analysisCache.has(info.key)) return analysisCache.get(info.key);
+    try {
+      const j = await (await fetch(info.url)).json();
+      if (j && j.ready) {
+        analysisCache.set(info.key, j);
+        return j;
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  function currentTrackObject() {
+    return isOnlineStreaming ? currentStreamingTrack : (currentSongIndex >= 0 ? librarySongs[currentSongIndex] : null);
+  }
+
+  // Level matching: attenuate loud masters down to the target (volume cannot go above 1, so quiet songs stay as they are)
+  function normGainFor(track) {
+    const a = transitionMode ? getKnownAnalysis(track) : null;
+    if (!a || a.lufs === null || a.lufs === undefined) return 1;
+    return Math.min(1, Math.pow(10, (LOUDNESS_TARGET_LUFS - a.lufs) / 20));
+  }
+
+  // Element volume for a deck: the listener's master volume times that deck's level-matching gain
+  function deckLevel(deck) {
+    const g = deck && typeof deck._normGain === 'number' ? deck._normGain : 1;
+    return currentMasterVolume * g;
+  }
+
+  function applyDeckGain(deck, gain, rampMs = 0) {
+    if (!deck) return;
+    const from = typeof deck._normGain === 'number' ? deck._normGain : 1;
+    if (!rampMs || Math.abs(from - gain) < 0.01) {
+      deck._normGain = gain;
+      if (!isCrossfading && deck === activeDeck) deck.volume = deckLevel(deck);
+      return;
     }
-    if (genre.includes('rock') || genre.includes('metal') || genre.includes('indie')) {
-      return 4.8; // Dynamic rock transition
-    }
-    if (genre.includes('chill') || genre.includes('lofi') || genre.includes('ambient') || genre.includes('classical') || genre.includes('soundtrack')) {
-      return 7.5; // Lush cinematic expansive fade
-    }
-    if (genre.includes('jazz') || genre.includes('acoustic') || genre.includes('r&b') || genre.includes('rnb') || genre.includes('soul')) {
-      return 6.0; // Silky studio transition
-    }
-    return 5.0;
+    const start = performance.now();
+    const tick = (now) => {
+      const t = Math.min(1, (now - start) / rampMs);
+      deck._normGain = from + (gain - from) * t;
+      if (!isCrossfading && deck === activeDeck) deck.volume = deckLevel(deck);
+      if (t < 1) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+
+  // Analyse the song that just started: match its level and skip any silence it opens with
+  function primeAnalysis(track, retry = true) {
+    loadAnalysis(track).then(a => {
+      if (!a) {
+        // Streams can only be analysed once the server has cached them
+        if (retry && analysisInfo(track) && !track.filename) {
+          setTimeout(() => { if (currentTrackObject() === track) primeAnalysis(track, false); }, 9000);
+        }
+        return;
+      }
+      if (currentTrackObject() !== track) return;
+      applyDeckGain(activeDeck, normGainFor(track), 1200);
+      if (transitionMode && a.lead > 0.3 && activeDeck.currentTime < a.lead - 0.3) {
+        try { activeDeck.currentTime = a.lead - 0.05; } catch (e) {}
+      }
+    });
+  }
+
+  const GENRE_FAMILIES = [
+    ['electronic', ['electronic', 'edm', 'dance', 'house', 'techno', 'trance', 'dubstep', 'drum', 'garage']],
+    ['hiphop', ['hip-hop', 'hip hop', 'rap', 'trap', 'drill', 'grime']],
+    ['rnb', ['r&b', 'rnb', 'soul', 'funk']],
+    ['rock', ['rock', 'metal', 'punk', 'grunge', 'indie', 'alternative']],
+    ['country', ['country', 'americana', 'bluegrass', 'folk']],
+    ['chill', ['ambient', 'lofi', 'lo-fi', 'chill', 'classical', 'soundtrack', 'piano', 'jazz', 'acoustic', 'new age']],
+    ['latin', ['latin', 'reggaeton', 'salsa', 'bachata', 'dancehall', 'afro']],
+    ['pop', ['pop', 'desi', 'hindi', 'bollywood']],
+  ];
+  // Families that blend acceptably; anything else is a "different world" and gets an echo-out
+  const GENRE_NEIGHBOURS = {
+    pop: ['electronic', 'hiphop', 'rnb', 'rock', 'latin', 'country'],
+    electronic: ['pop', 'hiphop', 'latin'],
+    hiphop: ['rnb', 'pop', 'electronic', 'latin'],
+    rnb: ['hiphop', 'pop', 'chill'],
+    rock: ['pop', 'country'],
+    country: ['rock', 'pop', 'chill'],
+    chill: ['rnb', 'country'],
+    latin: ['pop', 'hiphop', 'electronic'],
+  };
+
+  function genreFamily(track) {
+    if (!track) return null;
+    const g = resolveSongGenreForTransition(track).toLowerCase();
+    const hit = GENRE_FAMILIES.find(([, words]) => words.some(w => g.includes(w)));
+    return hit ? hit[0] : null;
+  }
+
+  function genreDistance(a, b) {
+    if (!a || !b) return 1;          // unknown: let the audio measurements decide
+    if (a === b) return 0;
+    return (GENRE_NEIGHBOURS[a] || []).includes(b) ? 1 : 2;
+  }
+
+  // Tempo gap as a fraction, folding half/double time (70 and 140 BPM line up)
+  function tempoGap(a, b) {
+    if (!a || !b || !a.bpm || !b.bpm) return null;
+    return Math.min(...[0.5, 1, 2].map(k => Math.abs(b.bpm * k - a.bpm) / a.bpm));
+  }
+
+  const fadeCurves = {
+    equalOut: t => Math.cos(t * Math.PI / 2),
+    equalIn: t => Math.sin(t * Math.PI / 2),
+    linearOut: t => 1 - t,
+    linearIn: t => t,
+  };
+
+  function isSameAlbum(a, b) {
+    const album = (t) => ((t && t.album) || '').trim().toLowerCase();
+    const generic = ['', 'single', 'unknown album', 'online stream', 'online stream master', 'music studio master', 'music studio'];
+    return !!(a && b) && album(a) === album(b) && !generic.includes(album(a)) && (a.artist || '') === (b.artist || '');
   }
 
   /**
-   * Dynamically analyzes outgoing and incoming track profiles (genre, tempo feel, intro/outro lengths)
-   * to determine the optimal DJ blend style, cue jump offset, and sound effect transitions.
+   * Returns { style, label, durationMs, startBeforeEnd (s before the outgoing music ends), cue (s into the
+   * incoming file), inDelay (0..1 of the duration before the incoming starts), outCurve/inCurve (0..1 -> gain),
+   * bassSwap, filterSweep, lowpassOut, echo, gapless }.
    */
   function planSmartTransition(outgoingTrack, incomingTrack, isManualSkip = false) {
-    const outGenre = (outgoingTrack && (outgoingTrack.genre || resolveSongGenreForTransition(outgoingTrack)) || '').toLowerCase();
-    const inGenre = (incomingTrack && (incomingTrack.genre || resolveSongGenreForTransition(incomingTrack)) || '').toLowerCase();
+    const a = getKnownAnalysis(outgoingTrack);
+    const b = getKnownAnalysis(incomingTrack);
+    const beat = a && a.bpm ? 60 / a.bpm : 0.5;
+    const base = {
+      cue: b ? (b.lead > 0.3 ? Math.max(0, b.lead - 0.05) : 0) : 0.35,
+      inDelay: 0,
+      outCurve: fadeCurves.equalOut,
+      inCurve: fadeCurves.equalIn,
+      bassSwap: false, filterSweep: false, lowpassOut: false, echo: null, gapless: false,
+    };
+    const plan = (style, label, seconds, startBeforeEnd, extra = {}) =>
+      ({ ...base, style, label, durationMs: Math.round(seconds * 1000), startBeforeEnd, ...extra });
 
-    const isOutBeatDriven = outGenre.includes('elect') || outGenre.includes('edm') || outGenre.includes('dance') || outGenre.includes('house') || outGenre.includes('pop') || outGenre.includes('hip') || outGenre.includes('rap') || outGenre.includes('latin');
-    const isInBeatDriven = inGenre.includes('elect') || inGenre.includes('edm') || inGenre.includes('dance') || inGenre.includes('house') || inGenre.includes('pop') || inGenre.includes('hip') || inGenre.includes('rap') || inGenre.includes('latin');
+    // The listener asked for the next song: be quick, just avoid a click
+    if (isManualSkip) return plan('quick', 'Quick blend', 0.9, 0);
 
-    let durationMs = 4800;
-    let cueOffset = 0.35; // Default: skip digital zero-padding at file start
-    let style = 'filter_swap'; // 'filter_swap' | 'echo_drop' | 'ambient_morph'
-    let triggerRiser = false;
-    let triggerVinylBrake = false;
-
-    if (isManualSkip) {
-      // Manual Next Track skip: punchy DJ cut with tape stop + dub echo
-      durationMs = 2400;
-      style = 'echo_drop';
-      triggerVinylBrake = true;
-      cueOffset = 0.45;
-    } else if (outGenre.includes('ambient') || outGenre.includes('lofi') || outGenre.includes('chill') || inGenre.includes('ambient') || inGenre.includes('lofi') || inGenre.includes('chill')) {
-      // Lush cinematic slow dissolve
-      durationMs = 7200;
-      style = 'ambient_morph';
-      cueOffset = 0.15;
-    } else if (isOutBeatDriven && isInBeatDriven) {
-      // Club DJ Low-End Swap (Clean Filter Sweep)
-      durationMs = 5000;
-      style = 'filter_swap';
-      cueOffset = 0.4;
-      // If incoming track is an extended mix with long intro build, trigger euphoric riser sweep
-      if (incomingTrack && ((incomingTrack.title || '').toLowerCase().includes('extended') || (incomingTrack.duration && incomingTrack.duration > 300))) {
-        triggerRiser = true;
-        cueOffset = 1.2;
-      }
-    } else {
-      // Genre mismatch or sudden tempo shift: Dub Echo tail bridges the energy gap
-      durationMs = 4200;
-      style = 'echo_drop';
-      triggerRiser = true;
-      cueOffset = 0.35;
+    // Consecutive tracks of one album flow as the artist intended (live albums, continuous mixes)
+    if (isSameAlbum(outgoingTrack, incomingTrack)) {
+      return plan('gapless', 'Gapless (same album)', 0.08, 0, { cue: 0, gapless: true });
     }
 
-    return {
-      durationMs,
-      cueOffset,
-      style,
-      triggerRiser,
-      triggerVinylBrake
-    };
+    const famOut = genreFamily(outgoingTrack);
+    const famIn = genreFamily(incomingTrack);
+    const distance = genreDistance(famOut, famIn);
+    const gap = tempoGap(a, b);
+    const tempoClash = gap !== null && gap > 0.12;
+    const tempoMatch = gap !== null && gap <= 0.06;
+    const outroFade = a ? a.outro_fade : 0;
+    const softIntro = b ? b.intro_rise >= 2.5 : false;
+
+    // 1. The song already fades itself out: let the next one rise under that fade
+    if (outroFade >= 4) {
+      const overlap = Math.min(10, outroFade);
+      return plan('natural_fade', 'Natural fade', overlap, overlap, {
+        outCurve: fadeCurves.linearOut,
+        inCurve: softIntro ? fadeCurves.linearIn : fadeCurves.equalIn,
+        bassSwap: distance < 2 && !tempoClash,
+      });
+    }
+
+    // 2. Different worlds or clashing tempos: never run two grooves together. Keep the outgoing
+    //    song's last hit, echo it out on the beat, and drop the next song in clean underneath.
+    if (distance === 2 || tempoClash) {
+      return plan('echo_out', 'Echo out', 2.4, 0.55, {
+        inDelay: 0.2,
+        outCurve: t => (t < 0.22 ? 1 : Math.max(0, 1 - (t - 0.22) / 0.12)),
+        inCurve: t => (t < 0.2 ? 0 : fadeCurves.equalIn(Math.min(1, (t - 0.2) / 0.19))),
+        echo: { delay: Math.min(0.6, Math.max(0.25, beat / 2)), feedback: 0.5, hold: 0.22 },
+      });
+    }
+
+    // 3. Ambient, classical, jazz, lo-fi: a slow, soft dissolve that dulls the outgoing highs
+    if (famOut === 'chill' || famIn === 'chill') {
+      return plan('ambient_morph', 'Ambient morph', 10, 10, { lowpassOut: true });
+    }
+
+    // Blend over 16 beats of the outgoing song (8 s at 120 BPM) when tempos line up; shorter otherwise,
+    // so two slightly different tempos are not heard drifting against each other
+    const blendLen = tempoMatch ? Math.min(10, Math.max(6, beat * 16)) : 5;
+
+    // 4. Club music at compatible tempos: filter sweep plus bass swap
+    if (famOut === 'electronic' && famIn === 'electronic') {
+      return plan('filter_sweep', 'DJ filter sweep', blendLen, blendLen, { filterSweep: true, bassSwap: true });
+    }
+
+    // 5. Everything else that fits together: equal-power blend with a bass swap
+    return plan('bass_swap_blend', tempoMatch ? 'Beat blend' : 'Smooth blend', blendLen, blendLen, { bassSwap: true });
   }
 
   function getEffectiveAudioDuration() {
@@ -926,58 +1092,6 @@ document.addEventListener('DOMContentLoaded', () => {
       return curTrackObj.duration;
     }
     return 0;
-  }
-
-  // ==================== SILENCE TRIMMING ====================
-  // Leading/trailing silence per track (measured by the server with ffmpeg), so a song that ends with
-  // 15s of silence still crossfades into a song that opens with 12s of silence at the right moments.
-  const silenceCache = new Map();
-
-  function silenceInfo(track) {
-    if (!track || track.is_android_mediastore || track.is_local_device) return null;
-    if (track.filename) {
-      return { key: 'f:' + track.filename, url: `/api/audio/silence?filename=${encodeURIComponent(track.filename)}` };
-    }
-    const q = track.query || (track.title ? `${track.title} ${track.artist}` : '');
-    return q ? { key: 'q:' + q, url: `/api/audio/silence?q=${encodeURIComponent(q)}` } : null;
-  }
-
-  function getKnownSilence(track) {
-    const info = silenceInfo(track);
-    return info ? (silenceCache.get(info.key) || null) : null;
-  }
-
-  async function loadSilence(track) {
-    const info = silenceInfo(track);
-    if (!info) return null;
-    if (silenceCache.has(info.key)) return silenceCache.get(info.key);
-    try {
-      const j = await (await fetch(info.url)).json();
-      if (j && j.ready) {
-        const sil = { lead: j.lead || 0, trail: j.trail || 0 };
-        silenceCache.set(info.key, sil);
-        return sil;
-      }
-    } catch (e) {}
-    return null;
-  }
-
-  function currentTrackObject() {
-    return isOnlineStreaming ? currentStreamingTrack : (currentSongIndex >= 0 ? librarySongs[currentSongIndex] : null);
-  }
-
-  // Measure the track that just started; if it opens with silence we are still sitting in, skip past it
-  function primeSilence(track, retry = true) {
-    loadSilence(track).then(sil => {
-      if (sil) {
-        if (transitionMode && currentTrackObject() === track && sil.lead > 0.3 && activeDeck.currentTime < sil.lead - 0.3) {
-          try { activeDeck.currentTime = sil.lead - 0.05; } catch (e) {}
-        }
-      } else if (retry && silenceInfo(track) && track.query !== undefined) {
-        // Streams can only be analysed once the server finished caching them
-        setTimeout(() => { if (currentTrackObject() === track) primeSilence(track, false); }, 9000);
-      }
-    });
   }
 
   function peekNextTrack() {
@@ -1040,128 +1154,109 @@ document.addEventListener('DOMContentLoaded', () => {
     return null;
   }
 
-  function cancelCrossfade() {
-    if (!isCrossfading && !crossfadeAnimId) return;
-    if (crossfadeAnimId) {
-      cancelAnimationFrame(crossfadeAnimId);
-      crossfadeAnimId = null;
-    }
-    if (crossfadeOutgoingDeck) {
-      try {
-        crossfadeOutgoingDeck.pause();
-        crossfadeOutgoingDeck.currentTime = 0;
-        crossfadeOutgoingDeck.src = '';
-        crossfadeOutgoingDeck.volume = 0;
-        crossfadeOutgoingDeck.playbackRate = 1.0;
-      } catch (e) {}
-    }
-    if (activeDeck) {
-      try {
-        activeDeck.volume = currentMasterVolume;
-        activeDeck.playbackRate = 1.0;
-      } catch (e) {}
-    }
-    if (djAudioFx) djAudioFx.resetFilters();
+  let crossfadeTimer = null;
+  let crossfadeOnAudioClock = false; // envelopes scheduled in Web Audio, which keeps running when the window is hidden
+
+  function stopDeck(deck) {
+    try {
+      deck.pause();
+      deck.currentTime = 0;
+      deck.src = '';
+      deck.volume = 0;
+      deck.playbackRate = 1.0;
+    } catch (e) {}
+  }
+
+  function resetCrossfadeState() {
     isCrossfading = false;
     crossfadeProgress = 0;
     crossfadeOutgoingDeck = null;
     crossfadeIncomingDeck = null;
+    crossfadeOnAudioClock = false;
+    activeTransitionPlan = null;
     [playerTransitionBtn, fsTransitionBtn].forEach(btn => {
       if (btn) btn.classList.remove('crossfading');
     });
   }
 
-  let activeTransitionPlan = null;
-  function startCrossfadeAnimation(outgoingDeck, incomingDeck, durationOrPlan) {
+  function cancelCrossfade() {
+    if (!isCrossfading && !crossfadeAnimId && !crossfadeTimer) return;
     if (crossfadeAnimId) cancelAnimationFrame(crossfadeAnimId);
+    if (crossfadeTimer) clearTimeout(crossfadeTimer);
+    crossfadeAnimId = null;
+    crossfadeTimer = null;
+    if (crossfadeOutgoingDeck) stopDeck(crossfadeOutgoingDeck);
+    if (activeDeck) {
+      try {
+        activeDeck.volume = deckLevel(activeDeck);
+        activeDeck.playbackRate = 1.0;
+      } catch (e) {}
+    }
+    if (djAudioFx) djAudioFx.resetFilters();
+    resetCrossfadeState();
+  }
+
+  let activeTransitionPlan = null;
+  function startCrossfadeAnimation(outgoingDeck, incomingDeck, plan) {
+    if (crossfadeAnimId) cancelAnimationFrame(crossfadeAnimId);
+    if (crossfadeTimer) clearTimeout(crossfadeTimer);
     isCrossfading = true;
     crossfadeOutgoingDeck = outgoingDeck;
     crossfadeIncomingDeck = incomingDeck;
     crossfadeProgress = 0;
-
-    djAudioFx.init();
-    djAudioFx.resume();
-
-    const plan = (typeof durationOrPlan === 'object' && durationOrPlan !== null)
-      ? durationOrPlan
-      : { durationMs: Math.max(700, durationOrPlan || 4800), style: 'filter_swap', cueOffset: 0.35 };
-
     activeTransitionPlan = plan;
-    const durationMs = plan.durationMs;
-    const durationSec = durationMs / 1000;
-
-    // Apply DJ FX based on transition plan
-    if (plan.style === 'filter_swap') {
-      djAudioFx.applyFilterSweep(outgoingDeck, incomingDeck, durationSec);
-    } else if (plan.style === 'echo_drop') {
-      djAudioFx.triggerEchoOut(outgoingDeck, 2.2);
-      if (plan.triggerVinylBrake) {
-        djAudioFx.triggerVinylBrake(outgoingDeck, 0.36);
-      }
-    }
-    if (plan.triggerRiser) {
-      djAudioFx.playRiserSweep(durationSec);
-    }
 
     [playerTransitionBtn, fsTransitionBtn].forEach(btn => {
       if (btn && transitionMode) {
         btn.classList.add('crossfading');
-        btn.title = `Smart Transition: ${plan.style === 'filter_swap' ? 'DJ Filter Swap' : (plan.style === 'echo_drop' ? 'Echo-Out Drop' : 'Ambient Morph')} Active (T)`;
+        btn.title = `Smart Transition: ${plan.label} (T)`;
       }
     });
 
-    const startTime = performance.now();
+    // Preferred: the whole transition scheduled on the audio clock. requestAnimationFrame stops while
+    // the window is minimised, which used to freeze transitions halfway.
+    if (djAudioFx.init() && djAudioFx.scheduleTransition(outgoingDeck, incomingDeck, plan)) {
+      crossfadeOnAudioClock = true;
+      outgoingDeck.volume = deckLevel(outgoingDeck);
+      incomingDeck.volume = deckLevel(incomingDeck);
+      crossfadeTimer = setTimeout(() => finishCrossfade(outgoingDeck, incomingDeck), plan.durationMs + 60);
+      return;
+    }
 
+    // Fallback without Web Audio: animate the element volumes
+    const startTime = performance.now();
     function step(now) {
       if (!isCrossfading) return;
-      const elapsed = now - startTime;
-      const t = Math.min(1, Math.max(0, elapsed / durationMs));
+      const t = Math.min(1, Math.max(0, (now - startTime) / plan.durationMs));
       crossfadeProgress = t;
-
-      const outVol = currentMasterVolume * Math.cos(t * 0.5 * Math.PI);
-      const inVol = currentMasterVolume * Math.sin(t * 0.5 * Math.PI);
-
       try {
-        if (!plan.triggerVinylBrake || t > 0.4) {
-          outgoingDeck.volume = Math.max(0, Math.min(1, outVol));
-        }
-        incomingDeck.volume = Math.max(0, Math.min(1, inVol));
+        outgoingDeck.volume = Math.max(0, Math.min(1, deckLevel(outgoingDeck) * plan.outCurve(t)));
+        incomingDeck.volume = Math.max(0, Math.min(1, deckLevel(incomingDeck) * plan.inCurve(t)));
       } catch (e) {}
-
       if (t < 1) {
         crossfadeAnimId = requestAnimationFrame(step);
       } else {
         finishCrossfade(outgoingDeck, incomingDeck);
       }
     }
-
     crossfadeAnimId = requestAnimationFrame(step);
   }
 
   function finishCrossfade(outgoingDeck, incomingDeck) {
     if (crossfadeAnimId) cancelAnimationFrame(crossfadeAnimId);
+    if (crossfadeTimer) clearTimeout(crossfadeTimer);
     crossfadeAnimId = null;
+    crossfadeTimer = null;
+    stopDeck(outgoingDeck);
     try {
-      outgoingDeck.pause();
-      outgoingDeck.currentTime = 0;
-      outgoingDeck.src = '';
-      outgoingDeck.volume = 0;
-      outgoingDeck.playbackRate = 1.0;
-    } catch (e) {}
-    try {
-      incomingDeck.volume = currentMasterVolume;
+      incomingDeck.volume = deckLevel(incomingDeck);
       incomingDeck.playbackRate = 1.0;
     } catch (e) {}
     if (djAudioFx) djAudioFx.resetFilters();
-    isCrossfading = false;
-    crossfadeProgress = 0;
-    crossfadeOutgoingDeck = null;
-    crossfadeIncomingDeck = null;
+    resetCrossfadeState();
     hasTriggeredAutoCrossfade = false;
-    activeTransitionPlan = null;
     [playerTransitionBtn, fsTransitionBtn].forEach(btn => {
       if (btn) {
-        btn.classList.remove('crossfading');
         btn.title = transitionMode
           ? 'Smart Transition: ON — Dynamic hook cueing & DJ crossfade active (T)'
           : 'Smart Transition: OFF — Click to enable (T)';
@@ -1170,14 +1265,20 @@ document.addEventListener('DOMContentLoaded', () => {
     saveCurrentPlaybackState();
   }
 
+  function loadDeckSource(deck, audioUrl, datasetMeta) {
+    deck.dataset.streamMode = (datasetMeta && datasetMeta.streamMode) || 'full';
+    deck.src = audioUrl;
+    deck.load();
+  }
+
   let isAutoCrossfadeInProgress = false;
   function transitionToAudio(audioUrl, durationOrTrack, datasetMeta = null) {
     const outgoingDeck = activeDeck;
     const incomingDeck = standbyDeck;
 
-    const currentTrack = isOnlineStreaming ? currentStreamingTrack : (currentSongIndex >= 0 ? librarySongs[currentSongIndex] : null);
     const incomingTrack = (durationOrTrack && typeof durationOrTrack === 'object') ? durationOrTrack : null;
-    const transitionPlan = planSmartTransition(currentTrack, incomingTrack, isManualTransitionRequested);
+    // Callers update the "current song" before calling us, so the outgoing song is read from its deck
+    const plan = planSmartTransition(outgoingDeck._track || null, incomingTrack, isManualTransitionRequested);
     isManualTransitionRequested = false;
     const isAutoCrossfade = isAutoCrossfadeInProgress;
     isAutoCrossfadeInProgress = false;
@@ -1186,70 +1287,55 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (transitionMode && isCurrentlyPlayingAudio) {
       cancelCrossfade();
-
-      if (datasetMeta) {
-        incomingDeck.dataset.streamMode = datasetMeta.streamMode || 'full';
-        if (datasetMeta.streamFullEndpoint) incomingDeck.dataset.streamFullEndpoint = datasetMeta.streamFullEndpoint;
-        else delete incomingDeck.dataset.streamFullEndpoint;
-        if (datasetMeta.streamQuery) incomingDeck.dataset.streamQuery = datasetMeta.streamQuery;
-        else delete incomingDeck.dataset.streamQuery;
-      } else {
-        incomingDeck.dataset.streamMode = 'full';
-        delete incomingDeck.dataset.streamFullEndpoint;
-        delete incomingDeck.dataset.streamQuery;
-      }
-
-      incomingDeck.src = audioUrl;
+      loadDeckSource(incomingDeck, audioUrl, datasetMeta);
+      incomingDeck._track = incomingTrack;
+      incomingDeck._normGain = normGainFor(incomingTrack);
       incomingDeck.volume = 0;
-      incomingDeck.load();
-      // currentTime set before load() is discarded, so skip the silent lead-in once metadata is ready
-      const knownIn = getKnownSilence(incomingTrack);
-      const cueOffset = (knownIn && knownIn.lead > 0.3) ? Math.max(0, knownIn.lead - 0.05) : (transitionPlan.cueOffset || 0.35);
+      // currentTime set before load() is discarded, so cue past the silent lead-in once metadata is ready
       incomingDeck.addEventListener('loadedmetadata', () => {
-        try { if (incomingDeck.currentTime < cueOffset) incomingDeck.currentTime = cueOffset; } catch (e) {}
+        try { if (incomingDeck.currentTime < plan.cue) incomingDeck.currentTime = plan.cue; } catch (e) {}
       }, { once: true });
 
       // Swap deck pointers immediately so UI/scrubber binds to incoming track
       activeDeck = incomingDeck;
       standbyDeck = outgoingDeck;
 
+      if (plan.inDelay > 0) {
+        // Echo-out: the outgoing song finishes and echoes first; the next one drops in on the beat
+        startCrossfadeAnimation(outgoingDeck, incomingDeck, plan);
+        setTimeout(() => {
+          if (activeDeck !== incomingDeck) return; // superseded by another change
+          const p = incomingDeck.play();
+          if (p !== undefined) p.catch(() => updatePlayIcon(false));
+        }, plan.durationMs * plan.inDelay);
+        return;
+      }
+
       const playPromise = incomingDeck.play();
       if (playPromise !== undefined) {
         playPromise.then(() => {
-          startCrossfadeAnimation(outgoingDeck, incomingDeck, transitionPlan);
+          startCrossfadeAnimation(outgoingDeck, incomingDeck, plan);
         }).catch((err) => {
           console.warn('Playback on incoming deck failed:', err);
           activeDeck = outgoingDeck;
           standbyDeck = incomingDeck;
-          outgoingDeck.volume = currentMasterVolume;
+          outgoingDeck.volume = deckLevel(outgoingDeck);
           updatePlayIcon(false);
         });
       } else {
-        startCrossfadeAnimation(outgoingDeck, incomingDeck, transitionPlan);
+        startCrossfadeAnimation(outgoingDeck, incomingDeck, plan);
       }
     } else {
       cancelCrossfade();
-      if (datasetMeta) {
-        activeDeck.dataset.streamMode = datasetMeta.streamMode || 'full';
-        if (datasetMeta.streamFullEndpoint) activeDeck.dataset.streamFullEndpoint = datasetMeta.streamFullEndpoint;
-        else delete activeDeck.dataset.streamFullEndpoint;
-        if (datasetMeta.streamQuery) activeDeck.dataset.streamQuery = datasetMeta.streamQuery;
-        else delete activeDeck.dataset.streamQuery;
-      } else {
-        activeDeck.dataset.streamMode = 'full';
-        delete activeDeck.dataset.streamFullEndpoint;
-        delete activeDeck.dataset.streamQuery;
-      }
-
-      activeDeck.src = audioUrl;
-      activeDeck.volume = currentMasterVolume;
-      activeDeck.currentTime = 0;
-      activeDeck.load();
-      const knownLead = transitionMode ? getKnownSilence(incomingTrack) : null;
-      if (knownLead && knownLead.lead > 0.3) {
+      loadDeckSource(activeDeck, audioUrl, datasetMeta);
+      activeDeck._track = incomingTrack;
+      activeDeck._normGain = normGainFor(incomingTrack);
+      activeDeck.volume = deckLevel(activeDeck);
+      const known = transitionMode && !plan.gapless ? getKnownAnalysis(incomingTrack) : null;
+      if (known && known.lead > 0.3) {
         const deck = activeDeck;
         deck.addEventListener('loadedmetadata', () => {
-          try { deck.currentTime = Math.max(0, knownLead.lead - 0.05); } catch (e) {}
+          try { deck.currentTime = Math.max(0, known.lead - 0.05); } catch (e) {}
         }, { once: true });
       }
       const playPromise = activeDeck.play();
@@ -1276,6 +1362,7 @@ document.addEventListener('DOMContentLoaded', () => {
     transitionMode = !transitionMode;
     localStorage.setItem('musicstudio_transition', transitionMode);
     updateTransitionBtnState();
+    applyDeckGain(activeDeck, normGainFor(currentTrackObject()), 600);
     if (transitionMode) {
       djAudioFx.init();
       djAudioFx.resume();
@@ -2844,7 +2931,7 @@ document.addEventListener('DOMContentLoaded', () => {
     return onlineShuffleList;
   }
   let hasPrefetchedNextTrack = false;
-  let silencePass = 0; // 0: not measured, 1: measured at 40%, 2: re-measured at 70%
+  let analysisPass = 0; // 0: not analysed, 1: analysed at 40%, 2: re-checked at 70%
 
   function normalizeSongString(str) {
     return (str || '')
@@ -3077,7 +3164,7 @@ document.addEventListener('DOMContentLoaded', () => {
     currentStreamingTrack = track;
     hasRecordedPlayForCurrentTrack = false;
     hasPrefetchedNextTrack = false;
-    silencePass = 0;
+    analysisPass = 0;
     hasTriggeredAutoCrossfade = false;
 
     if (queue && queue.length) {
@@ -3157,7 +3244,7 @@ document.addEventListener('DOMContentLoaded', () => {
     updatePlayIcon(true);
     highlightPlayingRow();
     refreshQueueDrawerIfOpen();
-    primeSilence(track);
+    primeAnalysis(track);
     broadcastPlaybackState();
     showToast(`Streaming live: ${track.title} - ${track.artist}`, 'info');
   }
@@ -4368,7 +4455,7 @@ document.addEventListener('DOMContentLoaded', () => {
     currentSongIndex = idx;
     hasRecordedPlayForCurrentTrack = false;
     hasPrefetchedNextTrack = false;
-    silencePass = 0;
+    analysisPass = 0;
     hasTriggeredAutoCrossfade = false;
     playHistory.push(idx);
     if (playHistory.length > 100) playHistory.shift();
@@ -4459,7 +4546,7 @@ document.addEventListener('DOMContentLoaded', () => {
     updatePlayIcon(true);
     highlightPlayingRow();
     refreshQueueDrawerIfOpen();
-    primeSilence(song);
+    primeAnalysis(song);
   }
 
   function togglePlay() {
@@ -4923,29 +5010,29 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }
 
-      // Measure silence for this and the next track (streams only become measurable once cached, so retry later)
+      // Analyse this song and the next (streams only become measurable once cached, so try again later)
       const playedRatio = activeDeck.currentTime / effectiveDur;
-      if (effectiveDur > 15 && (playedRatio >= 0.4 && silencePass < 1 || playedRatio >= 0.7 && silencePass < 2)) {
-        silencePass++;
+      if (effectiveDur > 15 && (playedRatio >= 0.4 && analysisPass < 1 || playedRatio >= 0.7 && analysisPass < 2)) {
+        analysisPass++;
         const nx = peekNextTrack();
-        loadSilence(curTrackObj);
-        loadSilence(nx ? (nx.track || nx.song) : null);
+        loadAnalysis(curTrackObj);
+        loadAnalysis(nx ? (nx.track || nx.song) : null);
       }
 
-      // Smart Transition: DJ & Apple Music-Style Audio Crossfade Engine
+      // Smart Transition: start the planned transition so it lands where the music actually ends
       if (transitionMode && repeatMode !== 'one' && !isCrossfading && !hasTriggeredAutoCrossfade && effectiveDur > 0) {
         const nextItem = peekNextTrack();
         const nextTrackObj = nextItem ? (nextItem.track || nextItem.song) : null;
-        const plan = planSmartTransition(curTrackObj, nextTrackObj, false);
-        const trailSilence = (getKnownSilence(curTrackObj) || { trail: 0 }).trail;
-        const soundEnd = effectiveDur - trailSilence; // where the music actually stops
-        const safeDuration = Math.min(plan.durationMs / 1000, Math.max(3.8, soundEnd * 0.28));
-        const remainingTime = soundEnd - activeDeck.currentTime;
-
-        if (remainingTime <= safeDuration && (effectiveDur - activeDeck.currentTime) > 0.2 && activeDeck.currentTime > 3) {
-          hasTriggeredAutoCrossfade = true;
-          isAutoCrossfadeInProgress = true;
-          playNextTrack();
+        const plan = planSmartTransition(activeDeck._track || curTrackObj, nextTrackObj, false);
+        if (!plan.gapless) { // gapless album playback waits for the real end of the file
+          const a = getKnownAnalysis(curTrackObj);
+          const soundEnd = effectiveDur - (a ? a.trail : 0);
+          const startAt = soundEnd - Math.min(plan.startBeforeEnd, soundEnd * 0.3);
+          if (activeDeck.currentTime >= startAt && (effectiveDur - activeDeck.currentTime) > 0.2 && activeDeck.currentTime > 3) {
+            hasTriggeredAutoCrossfade = true;
+            isAutoCrossfadeInProgress = true;
+            playNextTrack();
+          }
         }
       }
 
@@ -6067,7 +6154,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Shuffle/repeat changed what plays next: prefetch/measure the new next song and refresh "Up next" views
   function onPlaybackOrderChanged() {
     hasPrefetchedNextTrack = false;
-    silencePass = 0;
+    analysisPass = 0;
     refreshQueueDrawerIfOpen();
   }
 
@@ -6444,6 +6531,7 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
           audioEngine.load();
         } catch (e) {}
+        activeDeck._track = currentTrackObject() || data;
       }
 
       // Reliably seek to exact position once audio metadata is available

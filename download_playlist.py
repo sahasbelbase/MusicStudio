@@ -397,6 +397,8 @@ class SpotifyExtractor:
                         return collection_title, tracks
             except Exception as e:
                 print(f"[SpotifyExtractor] Public playlist pagination notice: {e}. Trying embed fallback.")
+                if updater.heal(e, "spotapi"):  # Spotify changed something: try a newer spotapi once
+                    return SpotifyExtractor.extract_tracks(url)
 
         # 3. Public Album with Pagination
         if album_match:
@@ -448,6 +450,8 @@ class SpotifyExtractor:
                         return collection_title, tracks
             except Exception as e:
                 print(f"[SpotifyExtractor] Public album pagination notice: {e}. Trying embed fallback.")
+                if updater.heal(e, "spotapi"):
+                    return SpotifyExtractor.extract_tracks(url)
 
         # 4. Fallback: Embed scraping (if public GraphQL endpoint is unreachable)
         if playlist_match or album_match:
@@ -510,9 +514,13 @@ class YouTubeExtractor:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
         except Exception as e:
-            if not _is_cert_error(e):
+            if _is_cert_error(e):
+                ydl_opts['nocheckcertificate'] = True  # only after a verified attempt failed
+            elif updater.heal(e):
+                import yt_dlp
+                ydl_opts['js_runtimes'] = updater.js_runtimes()
+            else:
                 raise
-            ydl_opts['nocheckcertificate'] = True  # only after a verified attempt failed
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
 
@@ -823,12 +831,13 @@ def download_single_track(
             if _is_cert_error(e) and not ydl_opts.get('nocheckcertificate'):
                 ydl_opts['nocheckcertificate'] = True
                 continue
-            # A stale yt-dlp is the usual cause of region/extraction failures: update once, then retry
-            if not auto_updated and _looks_like_extractor_failure(e):
+            # A stale yt-dlp or a missing JS runtime is the usual cause of 403/extraction failures:
+            # repair once (update yt-dlp, fetch QuickJS), then retry with the fresh engine
+            if not auto_updated and updater.heal(e):
                 auto_updated = True
-                if updater.update().get("ok"):
-                    import yt_dlp
-                    continue
+                import yt_dlp
+                ydl_opts['js_runtimes'] = updater.js_runtimes()
+                continue
             if attempt < max_retries:
                 time.sleep(1.5 * attempt)
             else:
@@ -845,14 +854,6 @@ def download_single_track(
 def _is_cert_error(exc: Exception) -> bool:
     msg = str(exc).lower()
     return "certificate verify failed" in msg or "certificate_verify_failed" in msg
-
-def _looks_like_extractor_failure(exc: Exception) -> bool:
-    msg = str(exc).lower()
-    return any(k in msg for k in (
-        "sign in to confirm", "unable to extract", "http error 403", "http error 400",
-        "signature", "nsig", "player response", "requested format is not available",
-        "no video formats", "javascript runtime", "po token",
-    ))
 
 def run_downloader(
     url: str,

@@ -26,6 +26,9 @@ datas = [
 ]
 
 hiddenimports = [
+    'audio_analysis',
+    'curl_cffi',
+
     'updater',
     'ssl_helper',
     'uvicorn',

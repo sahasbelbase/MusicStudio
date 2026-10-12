@@ -24,6 +24,10 @@ datas = [
 ]
 
 hiddenimports = [
+    'audio_analysis',
+    'spotapi',
+    'curl_cffi',
+
     'uvicorn',
     'uvicorn.logging',
     'uvicorn.loops',

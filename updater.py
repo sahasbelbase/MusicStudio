@@ -1,10 +1,11 @@
 """
-Runtime updater for the downloader engine (yt-dlp).
+Runtime updater and self-repair for the download engine.
 
-The packaged app bundles a frozen copy of yt-dlp, which goes stale whenever YouTube
-changes. This module downloads the latest pure-Python wheel from PyPI into a
-user-writable folder and puts it ahead of the bundled copy on sys.path, so no
-app re-install is needed.
+The packaged app bundles frozen copies of yt-dlp and spotapi, which go stale whenever YouTube or
+Spotify change. This module downloads the latest pure-Python wheels from PyPI into a user-writable
+folder that sits ahead of the bundled copies on sys.path, so no app re-install is needed. It also
+provides a JavaScript runtime (QuickJS) when the machine has none, which yt-dlp needs to solve
+YouTube's playback challenges.
 """
 
 import hashlib
@@ -12,10 +13,12 @@ import importlib
 import io
 import json
 import os
+import platform
 import re
 import shutil
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -33,7 +36,25 @@ PACKAGES = {
     "yt-dlp-ejs": ["yt_dlp_ejs"],  # JS challenge solver scripts used by newer yt-dlp
 }
 
+BIN_DIR = os.path.expanduser("~/.musicstudio/bin")
+
+# QuickJS-NG builds (MIT), pinned by SHA-256: https://github.com/quickjs-ng/quickjs/releases/tag/v0.17.0
+QJS_VERSION = "v0.17.0"
+QJS_ASSETS = {
+    ("darwin", "arm64"): ("qjs-darwin-arm64", "8be3ddfe3397d2e692e4e1e8972ee9d032a0a580505d2f8b4ea528cf1b651c11"),
+    ("darwin", "x86_64"): ("qjs-darwin-x86_64", "9e5e101b4fd13cda3204222ca9f8be35412c41dcdef3745829633b7a67245412"),
+    ("win32", "amd64"): ("qjs-windows-x86_64.exe", "2aeabf0092c3262d6b2609824418f7dd7ed1f1df939f73b2b15645230cac0d77"),
+    ("win32", "arm64"): ("qjs-windows-x86_64.exe", "2aeabf0092c3262d6b2609824418f7dd7ed1f1df939f73b2b15645230cac0d77"),
+    ("win32", "x86"): ("qjs-windows-x86.exe", "dedc4dd8da20234d206c433a706336fede47a14e75c690cb607f81aa9c9c71be"),
+    ("linux", "x86_64"): ("qjs-linux-x86_64", "0bfc02511a9f549c28b53880d988fc7cd5d361e90c5e8afdfcd7dc6774ceace5"),
+    ("linux", "aarch64"): ("qjs-linux-aarch64", "3372133484edf50a69f3c67903af41206d22a061e930e3cfb63269272ef56d2e"),
+}
+
+HEAL_INTERVAL = 30 * 60   # at most one self-repair attempt per package every 30 minutes
+
 _lock = threading.Lock()
+_heal_lock = threading.Lock()
+_last_heal = {}
 
 
 def activate():
@@ -103,12 +124,16 @@ def _install_wheel(name: str, roots: list) -> str:
     return data["info"]["version"]
 
 
-def reload_ytdlp():
-    """Drop cached yt_dlp modules so the next import picks up the updated copy."""
-    activate()
-    for m in [m for m in sys.modules if m == "yt_dlp" or m.startswith("yt_dlp.") or m.startswith("yt_dlp_ejs")]:
+def _purge(*packages: str):
+    """Drop cached modules so the next import picks up the updated copy."""
+    for m in [m for m in sys.modules if any(m == p or m.startswith(p + ".") for p in packages)]:
         del sys.modules[m]
     importlib.invalidate_caches()
+
+
+def reload_ytdlp():
+    activate()
+    _purge("yt_dlp", "yt_dlp_ejs")
     return importlib.import_module("yt_dlp")
 
 
@@ -129,9 +154,100 @@ def update() -> dict:
             return {"ok": False, "previous": previous, "current": installed_version(), "error": str(e)}
 
 
+def update_spotapi() -> bool:
+    """Hot-swap the latest spotapi; roll back if the new copy does not import with the bundled dependencies."""
+    with _lock:
+        dst = os.path.join(PKG_DIR, "spotapi")
+        backup = dst + ".bak"
+        shutil.rmtree(backup, ignore_errors=True)
+        had_copy = os.path.isdir(dst)
+        if had_copy:
+            shutil.copytree(dst, backup)
+        try:
+            _install_wheel("spotapi", ["spotapi"])
+            activate()
+            _purge("spotapi")
+            importlib.import_module("spotapi")
+            shutil.rmtree(backup, ignore_errors=True)
+            return True
+        except Exception:
+            shutil.rmtree(dst, ignore_errors=True)
+            if had_copy:
+                os.replace(backup, dst)
+            _purge("spotapi")
+            return False
+
+
+def _qjs_path() -> str:
+    return os.path.join(BIN_DIR, "qjs.exe" if sys.platform == "win32" else "qjs")
+
+
+def ensure_js_runtime() -> bool:
+    """
+    Make sure yt-dlp has a JavaScript runtime. Uses deno/node/bun when installed, otherwise downloads
+    a checksum-verified QuickJS (~1-2 MB). Without one, YouTube often answers 403 or hides formats.
+    """
+    if any(shutil.which(rt) for rt in ("deno", "node", "bun")) or os.path.isfile(_qjs_path()):
+        return True
+    os_key = "linux" if sys.platform.startswith("linux") else sys.platform
+    asset = QJS_ASSETS.get((os_key, platform.machine().lower()))
+    if not asset:
+        return False
+    name, digest = asset
+    try:
+        with safe_urlopen(f"https://github.com/quickjs-ng/quickjs/releases/download/{QJS_VERSION}/{name}", timeout=60) as r:
+            blob = r.read()
+    except Exception:
+        return False
+    if hashlib.sha256(blob).hexdigest() != digest:
+        return False
+    os.makedirs(BIN_DIR, exist_ok=True)
+    tmp = _qjs_path() + ".part"
+    with open(tmp, "wb") as f:
+        f.write(blob)
+    os.chmod(tmp, 0o755)
+    os.replace(tmp, _qjs_path())
+    return True
+
+
 def js_runtimes() -> dict:
-    """JS runtimes found on this machine, for yt-dlp's YouTube challenge solving."""
-    return {rt: {} for rt in ("deno", "node", "bun") if shutil.which(rt)}
+    """JS runtimes for yt-dlp's YouTube challenge solving (installed ones first, else our QuickJS)."""
+    found = {rt: {} for rt in ("deno", "node", "bun") if shutil.which(rt)}
+    if not found and os.path.isfile(_qjs_path()):
+        found["quickjs"] = {"path": _qjs_path()}
+    return found
+
+
+def looks_like_extractor_failure(exc: Exception) -> bool:
+    """Errors that a newer yt-dlp or a JS runtime usually fixes (YouTube changed something)."""
+    msg = str(exc).lower()
+    return any(k in msg for k in (
+        "sign in to confirm", "unable to extract", "http error 403", "http error 400",
+        "signature", "nsig", "player response", "requested format is not available",
+        "no video formats", "javascript runtime", "po token", "forbidden",
+    ))
+
+
+def heal(exc: Exception, package: str = "yt-dlp") -> bool:
+    """
+    Self-repair after a failure: for yt-dlp, fetch a JS runtime if missing and update yt-dlp;
+    for spotapi, update spotapi. Throttled per package. Returns True when something was refreshed,
+    so the caller can retry once.
+    """
+    if package == "yt-dlp" and not looks_like_extractor_failure(exc):
+        return False
+    with _heal_lock:
+        now = time.time()
+        if now - _last_heal.get(package, 0) < HEAL_INTERVAL:
+            return False
+        _last_heal[package] = now
+    try:
+        if package == "spotapi":
+            return update_spotapi()
+        runtime_added = not js_runtimes() and ensure_js_runtime()
+        return bool(update().get("ok")) or runtime_added
+    except Exception:
+        return False
 
 
 def _ver_tuple(v: str) -> tuple:

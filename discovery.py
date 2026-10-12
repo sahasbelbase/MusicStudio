@@ -10,7 +10,7 @@ import urllib.request
 import urllib.parse
 from ssl_helper import safe_urlopen
 from typing import List, Dict, Optional, Tuple
-from download_playlist import SpotifyExtractor
+from download_playlist import SpotifyExtractor, clean_track_artist_and_title
 
 USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
 
@@ -291,6 +291,77 @@ def search_tracks(query: str, limit: int = 25) -> List[Dict]:
 
     _set_cache(cache_key, results)
     return results
+
+def search_youtube(query: str, limit: int = 10) -> List[Dict]:
+    """
+    YouTube search for songs Deezer doesn't carry (independent, regional and YouTube-only releases).
+    Results point straight at the video, so streaming and downloading use exactly that upload.
+    """
+    q_clean = query.strip()
+    if not q_clean:
+        return []
+    cache_key = f"ytsearch_{q_clean.lower()}_{limit}"
+    cached = _get_cached(cache_key)
+    if cached:
+        return cached
+    try:
+        import yt_dlp
+        import updater
+        opts = {"extract_flat": True, "skip_download": True, "quiet": True, "no_warnings": True,
+                "js_runtimes": updater.js_runtimes()}
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(f"ytsearch{limit}:{q_clean}", download=False)
+    except Exception as e:
+        print(f"[Discovery] YouTube search notice: {e}")
+        return []
+
+    results = []
+    for entry in (info or {}).get("entries") or []:
+        vid, duration = entry.get("id"), entry.get("duration") or 0
+        if not vid or not (60 <= duration <= 15 * 60):   # skip shorts and hour-long mixes
+            continue
+        artist, title = clean_track_artist_and_title(entry.get("title", ""), entry.get("channel") or entry.get("uploader") or "")
+        results.append({
+            "id": f"yt_{vid}",
+            "title": title or entry.get("title", ""),
+            "artist": artist or entry.get("channel") or "YouTube",
+            "album": "",
+            "duration": int(duration),
+            "cover_url": f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
+            "preview_url": "",
+            "query": f"https://www.youtube.com/watch?v={vid}",
+            "source": "youtube",
+        })
+    _set_cache(cache_key, results)
+    return results
+
+
+def _relevance(track: Dict, words: List[str]) -> float:
+    """Share of the query's words found in the track's title/artist/album."""
+    text = f"{track.get('title', '')} {track.get('artist', '')} {track.get('album', '')}".lower()
+    return sum(1 for w in words if w in text) / len(words) if words else 0.0
+
+
+def search_tracks_everywhere(query: str, limit: int = 25) -> List[Dict]:
+    """
+    Deezer (clean catalogue metadata) plus YouTube (everything else), ranked by how well each result
+    matches the query. Deezer wins ties, and YouTube copies of songs Deezer already has are dropped.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        deezer_f = pool.submit(search_tracks, query, limit)
+        youtube_f = pool.submit(search_youtube, query, 10)
+        deezer, youtube = deezer_f.result(), youtube_f.result()
+
+    def key(t: Dict) -> str:
+        return " ".join(f"{t.get('artist', '')} {t.get('title', '')}".lower().split())
+
+    seen = {key(t) for t in deezer}
+    merged = deezer + [t for t in youtube if key(t) not in seen]
+    words = [w for w in query.lower().split() if len(w) > 1]
+    ranked = sorted(enumerate(merged), key=lambda it: (-_relevance(it[1], words), it[0]))
+    return [t for _, t in ranked][:limit]
+
 
 def search_albums(query: str, limit: int = 12) -> List[Dict]:
     """Searches albums and singles with cover art and track counts."""
