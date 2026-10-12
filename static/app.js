@@ -3720,10 +3720,30 @@ document.addEventListener('DOMContentLoaded', () => {
   if (modalCloseBtn) modalCloseBtn.addEventListener('click', closePlaylistModal);
   if (playlistModalBackdrop) playlistModalBackdrop.addEventListener('click', closePlaylistModal);
 
+  let modalAllTracks = [];
+  const modalSearch = document.getElementById('modal-search');
+
   function renderModalTracklist(tracks) {
+    modalAllTracks = tracks || [];
+    if (modalSearch) modalSearch.value = '';
+    renderModalRows(modalAllTracks);
+  }
+
+  if (modalSearch) {
+    modalSearch.addEventListener('input', () => {
+      const q = modalSearch.value.trim().toLowerCase();
+      renderModalRows(q ? modalAllTracks.filter(t =>
+        (t.title || '').toLowerCase().includes(q) ||
+        (t.artist || '').toLowerCase().includes(q) ||
+        (t.album || '').toLowerCase().includes(q)
+      ) : modalAllTracks);
+    });
+  }
+
+  function renderModalRows(tracks) {
     modalTracklist.innerHTML = '';
     if (!tracks.length) {
-      modalTracklist.innerHTML = `<div style="padding: 30px; text-align: center; color: var(--text-tertiary);">No tracks found in this collection.</div>`;
+      modalTracklist.innerHTML = `<div style="padding: 30px; text-align: center; color: var(--text-tertiary);">${modalAllTracks.length ? 'No tracks match your search.' : 'No tracks found in this collection.'}</div>`;
       return;
     }
 
@@ -3736,7 +3756,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const coverUrl = track.cover_url || 'placeholder.svg';
 
       row.innerHTML = `
-        <span class="row-num">${idx + 1}</span>
+        <span class="row-num">${(modalAllTracks.indexOf(track) + 1) || idx + 1}</span>
         <div class="row-meta">
           <img class="row-thumb" src="${coverUrl}" onerror="this.src='placeholder.svg'" alt="Cover" />
           <div class="row-text">

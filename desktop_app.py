@@ -24,6 +24,19 @@ if sys.platform == 'win32':
     except Exception:
         pass
 
+def get_webview_storage_dir() -> str:
+    """Persistent browser-profile folder so localStorage survives restarts."""
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.path.expanduser("~")
+        path = os.path.join(base, "MusicStudio", "WebView")
+    elif sys.platform == "darwin":
+        path = os.path.expanduser("~/Library/Application Support/MusicStudio/WebView")
+    else:
+        base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+        path = os.path.join(base, "MusicStudio", "webview")
+    os.makedirs(path, exist_ok=True)
+    return path
+
 def get_log_dir() -> str:
     """Return OS-appropriate log directory."""
     if sys.platform == "win32":
@@ -509,7 +522,13 @@ def main():
             icon_file = os.path.join(BASE_DIR, "MusicStudio.ico")
             if not os.path.isfile(icon_file):
                 icon_file = os.path.join(os.getcwd(), "MusicStudio.ico")
-            webview.start(on_gui_ready, debug=False, icon=icon_file if os.path.isfile(icon_file) else None)
+            # pywebview defaults to a private session, which wipes localStorage on every launch
+            # (last played song, queue, shuffle/repeat and the smart-transition choice were all lost).
+            webview.start(
+                on_gui_ready, debug=False,
+                icon=icon_file if os.path.isfile(icon_file) else None,
+                private_mode=False, storage_path=get_webview_storage_dir(),
+            )
         except Exception as e:
             print(f"Webview note: {e}. Falling back to default web browser.")
             webbrowser.open(url)
