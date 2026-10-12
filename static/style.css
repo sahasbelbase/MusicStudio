@@ -5469,3 +5469,277 @@ body.album-modal-open #playlist-modal .modal-window {
   flex: none;
 }
 .modal-search-wrap input { font-size: 0.95rem; }
+
+/* Fullscreen player: drawers and dialogs opened from it must sit above it */
+body.fs-open .drawer-overlay { z-index: 1890; }
+body.fs-open .track-drawer { z-index: 1895; }
+body.fs-open .modal-root { z-index: 2000; }
+
+.fs-icon-btn.fs-queue-labeled {
+  width: auto;
+  padding: 0 14px 0 11px;
+  border-radius: 999px;
+  gap: 7px;
+}
+.fs-queue-label { font-size: 0.8rem; font-weight: 600; }
+
+/* Up Next peek card (fullscreen player, bottom-right) */
+.fs-up-next {
+  position: absolute;
+  right: 32px;
+  bottom: 32px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 300px;
+  padding: 10px 14px 10px 10px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  color: var(--text-primary);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+}
+.fs-up-next:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.14);
+  transform: translateY(-1px);
+}
+.fs-up-next:focus-visible {
+  outline: 2px solid var(--accent-emerald, #10b981);
+  outline-offset: 2px;
+}
+.fs-up-next-art {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+.fs-up-next-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.fs-up-next-label {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent-emerald, #10b981);
+}
+.fs-up-next-title,
+.fs-up-next-artist {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fs-up-next-title {
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+.fs-up-next-artist {
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+}
+.fs-up-next-chevron {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  transition: transform 0.2s ease, color 0.2s ease;
+}
+.fs-up-next:hover .fs-up-next-chevron {
+  color: var(--text-primary);
+  transform: translateX(2px);
+}
+/* Small or short windows: sit in the flow under the volume control instead of floating */
+@media (max-width: 980px), (max-height: 720px) {
+  .fs-up-next {
+    position: static;
+    width: min(360px, calc(100% - 48px));
+    margin: 20px auto 28px;
+    flex-shrink: 0;
+  }
+}
+
+/* Queue header: the shared close button is absolutely positioned elsewhere; keep it in the flow here */
+.queue-header .drawer-close-btn { position: static; }
+
+/* ==========================================================================
+   LIBRARY TOOLBAR: two calm rows (search + view tools / grouping + actions)
+   ========================================================================== */
+.library-toolbar {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 12px;
+  padding: 14px 18px;
+}
+.lib-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.lib-bar-top .library-search-wrap {
+  flex: 1;
+  max-width: none;
+  min-width: 180px;
+  padding: 9px 16px;
+}
+.lib-bar-tools,
+.lib-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.lib-bar-tools .sort-selector-wrap { margin-left: 0; }
+.lib-bar-bottom {
+  flex-wrap: wrap;
+  justify-content: space-between;
+  row-gap: 10px;
+}
+.lib-bar-bottom .group-pills {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.lib-bar-bottom .group-pills::-webkit-scrollbar { display: none; }
+.group-pill { white-space: nowrap; flex-shrink: 0; }
+.lib-bar-actions { margin-left: auto; }
+.library-counter { white-space: nowrap; margin-right: 4px; }
+
+/* One consistent button style for library actions */
+.lib-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: var(--transition);
+}
+.lib-action-btn:hover {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: var(--border-hover);
+  color: var(--text-primary);
+}
+.lib-action-primary {
+  background: rgba(16, 185, 129, 0.14);
+  border-color: rgba(16, 185, 129, 0.45);
+  color: var(--emerald-light, #34d399);
+}
+.lib-action-primary:hover {
+  background: var(--emerald, #10b981);
+  border-color: var(--emerald, #10b981);
+  color: #03150d;
+}
+.lib-action-icon {
+  width: 34px;
+  padding: 0;
+}
+.lib-bar-tools .icon-action-btn,
+.lib-bar-tools .view-switch {
+  height: 34px;
+}
+.lib-bar-tools .icon-action-btn {
+  width: 34px;
+  justify-content: center;
+  padding: 0;
+  border-radius: var(--radius-full);
+}
+
+@media (max-width: 760px) {
+  .lib-bar-top { flex-wrap: wrap; }
+  .lib-bar-top .library-search-wrap { flex-basis: 100%; }
+  .lib-bar-tools { width: 100%; justify-content: space-between; }
+  .lib-bar-bottom .group-pills { width: 100%; }
+  .lib-bar-actions { width: 100%; justify-content: flex-end; }
+}
+
+/* ==========================================================================
+   DOWNLOADER: example chips on the left, enrichment grouped on the right
+   ========================================================================== */
+.hero-subrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-top: 14px;
+}
+.hero-subrow .chips-row { margin-top: 0; align-items: center; }
+.chips-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  margin-right: 2px;
+}
+.enrich-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+.enrich-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.76rem;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+.enrich-note svg { color: var(--accent-emerald, #10b981); }
+.enrich-btn {
+  height: 32px;
+  padding: 0 14px;
+  border-radius: var(--radius-full);
+  border: 1px solid rgba(139, 92, 246, 0.35);
+  background: rgba(139, 92, 246, 0.1);
+  color: #c4b5fd;
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: var(--transition);
+}
+.enrich-btn:hover {
+  background: rgba(139, 92, 246, 0.2);
+  border-color: var(--violet, #8b5cf6);
+  color: #fff;
+}
+.enrich-btn:disabled { opacity: 0.6; cursor: progress; }
+@media (max-width: 760px) {
+  .enrich-group { margin-left: 0; width: 100%; justify-content: space-between; }
+}
+
+/* Fullscreen: the cover shrinks with window height so title, scrubber and controls always fit */
+@media (min-width: 761px) {
+  .fs-cover-container {
+    width: min(360px, 40vh);
+    height: min(360px, 40vh);
+    margin-bottom: min(30px, 3vh);
+  }
+}

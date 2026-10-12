@@ -1651,7 +1651,7 @@ document.addEventListener('DOMContentLoaded', () => {
       showToast(e.message, 'error');
     } finally {
       btnEnrichAll.disabled = false;
-      btnEnrichAll.textContent = '✨ Enrich Studio Art & Tags';
+      btnEnrichAll.textContent = '✨ Enrich Library';
     }
   });
 
@@ -6035,12 +6035,20 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!el) return;
     const next = peekNextTrack();
     const t = next ? (next.track || next.song) : null;
-    if (!t || (repeatMode === 'one')) {
+    if (!t || repeatMode === 'one') {
       el.style.display = 'none';
       return;
     }
-    el.innerHTML = `<span class="fs-up-next-label">UP NEXT</span> ${escapeHtml(t.title || '')}${t.artist ? ' · ' + escapeHtml(t.artist) : ''}`;
-    el.style.display = 'inline-flex';
+    const art = document.getElementById('fs-up-next-art');
+    if (art) {
+      art.src = (t.cover_url && t.cover_url !== 'placeholder.svg')
+        ? t.cover_url
+        : (t.filename ? resolveApiUrl(`/api/songs/artwork/${encodeURIComponent(t.filename)}`) : 'placeholder.svg');
+    }
+    document.getElementById('fs-up-next-title').textContent = t.title || 'Unknown Track';
+    document.getElementById('fs-up-next-artist').textContent = t.artist || '';
+    el.title = `Up next: ${t.title || ''}${t.artist ? ' — ' + t.artist : ''} (open queue)`;
+    el.style.display = 'flex';
   }
   const fsUpNextEl = document.getElementById('fs-up-next');
   if (fsUpNextEl) fsUpNextEl.addEventListener('click', () => toggleQueueDrawer(true));

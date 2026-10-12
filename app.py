@@ -84,7 +84,8 @@ async def reject_non_local_hosts(request: Request, call_next):
 @app.middleware("http")
 async def add_no_cache_header(request, call_next):
     response = await call_next(request)
-    if request.url.path.startswith("/static") or request.url.path == "/":
+    path = request.url.path
+    if path.startswith("/static") or path == "/" or path.endswith((".js", ".css", ".html")):
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
@@ -2029,7 +2030,17 @@ def serve_favicon():
 def serve_index():
     index_path = os.path.join(STATIC_DIR, "index.html")
     if os.path.isfile(index_path):
-        return FileResponse(index_path)
+        # Version asset URLs by content: a webview with a persistent cache must never run an old app.js/style.css
+        h = hashlib.md5()
+        for name in ("app.js", "style.css"):
+            try:
+                with open(os.path.join(STATIC_DIR, name), "rb") as fh:
+                    h.update(fh.read())
+            except OSError:
+                pass
+        with open(index_path, encoding="utf-8") as fh:
+            html = re.sub(r'((?:app\.js|style\.css))\?v=[^"\']*', lambda m: f"{m.group(1)}?v={h.hexdigest()[:12]}", fh.read())
+        return HTMLResponse(html, headers={"Cache-Control": "no-cache, no-store, must-revalidate, max-age=0"})
     return HTMLResponse("<h1>Loading UI...</h1>")
 
 if __name__ == "__main__":
