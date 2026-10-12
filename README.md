@@ -1,187 +1,180 @@
-# Music Studio 🎵 — Universal Music Downloader & Player
+<div align="center">
 
-A high-speed, rate-limit resistant music downloader, audio tagger, and full-featured music player available across **Web**, **macOS**, **Windows**, **Android**, and **iPhone (iOS)**.
+<img src="MusicStudio.png" width="96" alt="Music Studio icon" />
 
-Supports downloading full playlists, albums, and tracks from **Spotify**, **YouTube**, and **YouTube Music** with **320 kbps MP3 conversion**, clean song-title formatting, and **1000×1000 Ultra-HD embedded cover artwork**—with **zero Spotify credentials required**.
+# Music Studio
 
----
+A music player and downloader for macOS and Windows. Play your library, stream anything, and download songs, albums and playlists from YouTube, YouTube Music and Spotify as 320 kbps MP3s with full tags and artwork.
 
-## 📦 Ready-to-Install Downloads
+[![Latest release](https://img.shields.io/github/v/release/sahasbelbase/MusicStudio?label=release&color=10b981)](https://github.com/sahasbelbase/MusicStudio/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/sahasbelbase/MusicStudio/total?color=10b981)](https://github.com/sahasbelbase/MusicStudio/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-10b981)](LICENSE)
 
-| Platform | Package | Size | Details |
-| :--- | :--- | :--- | :--- |
-| 📱 **Android** | [**`MusicStudio.apk`**](releases/MusicStudio.apk) | 4.0 MB | Universal APK (Android 7.0+ / API 24–36), background audio playback |
-| 🍏 **macOS** | [**`MusicStudio-macOS.dmg`**](releases/MusicStudio-macOS.dmg) | 69 MB | Apple Silicon (M1/M2/M3/M4/M5), native Mac Notch Dynamic Island HUD |
-| 🍎 **iPhone (iOS)** | [**`MusicStudio-iOS.zip`**](releases/MusicStudio-iOS.zip) | 216 KB | Native Xcode project, iOS 14.0+, background audio & LAN streaming |
-| 🪟 **Windows** | [**`MusicStudio-Windows-x64.zip`**](releases/MusicStudio-Windows-x64.zip) | 257 KB | Portable package with standalone [`MusicStudio.exe`](releases/MusicStudio.exe) |
+[![Download for macOS](https://img.shields.io/badge/Download-macOS_(.dmg)-000000?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/sahasbelbase/MusicStudio/releases/latest/download/MusicStudio-Installer.dmg)
+[![Download for Windows](https://img.shields.io/badge/Download-Windows_(Installer)-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/sahasbelbase/MusicStudio/releases/latest/download/MusicStudio-Setup.exe)
+[![Download for Android](https://img.shields.io/badge/Download-Android_(.apk)-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://github.com/sahasbelbase/MusicStudio/releases/latest/download/MusicStudio.apk)
 
-> 📖 **Detailed Installation Instructions**: Read the [**Releases Guide**](releases/README.md) for step-by-step setup on every platform.
-
----
-
-## ✨ Key Features
-
-### 🎧 Built-in Music Player
-- **High-Fidelity Audio Engine**: Crisp local playback with live scrubbing, time remaining, volume boost, shuffle, and repeat modes.
-- **Dock & Fullscreen Player**: Minimized floating dock player with quick controls, expandable into an immersive glassmorphism fullscreen visualizer with album art glow.
-- **Queue & Playlist Management**: Create custom playlists, reorder songs, and favorite tracks on the fly.
-
-### ⚡ Automatic Offline Detection (Library Only Mode)
-- **Zero-Disruption Offline Mode**: Automatically detects when your device loses internet connectivity or switches to Airplane Mode.
-- **Library Focus**: Seamlessly restricts navigation to your downloaded **Library**, hiding the Downloader and Discover tabs and displaying an `⚡ Offline Mode • Library Only` indicator pill.
-- **Instant Resume**: Restores full Discover and Downloader tabs the moment network connectivity returns.
-
-### 🔥 "Most Played" (Top 100) Smart Playlist
-- **Intelligent Habit Tracking**: Tracks every song played for 15+ seconds or to completion, recording play counts and timestamps in real time.
-- **Dynamic Top 100 Chart**: Automatically generates a dedicated, delete-protected smart playlist featuring your 100 most played tracks.
-- **Local & Server Sync**: Persists listening history across both browser `localStorage` and local backend storage.
-
-### 📥 Rate-Limit Resistant Downloader
-- **Zero Spotify Credentials**: Downloads public Spotify playlists of **1,000+ tracks** using resilient paginated scrapers—no Spotify Developer Client ID or Secret needed.
-- **True 320 kbps MP3 Conversion**: Direct audio transcoding via multi-threaded FFmpeg pipelines (2–6 parallel workers).
-- **Clean Song Titles**: Automatically purges video tags like `(Official Video)`, `[Lyrics]`, `[4K]`, and `Remastered` into pristine song names.
-- **Studio Metadata & 1000×1000 HD Artwork**: Integrates with Apple Music to embed official ID3v2.3 tags (artist, album, release year, genre, and HD cover art) into every file for car displays, Apple Music, and iTunes.
-
-### 🏝️ Mac Notch Dynamic Island HUD
-- **Hardware Notch Integration**: On MacBook Pro models with display notches (M1/M2/M3/M4/M5), hovering over the physical screen notch reveals an interactive Dynamic Island HUD.
-- **Live Controls**: Inspect the active track artwork, title, and artist, scrub through audio, and toggle play/pause directly from the notch.
+</div>
 
 ---
 
-## 📋 Prerequisites
+## Install
 
-1. **Python 3.8+**
-2. **FFmpeg** (Required for audio conversion and metadata embedding)
-   - **macOS** (Homebrew): `brew install ffmpeg`
-   - **Linux (Ubuntu/Debian)**: `sudo apt update && sudo apt install ffmpeg`
-   - **Windows**: `winget install Gyan.FFmpeg` or download from [gyan.dev/ffmpeg](https://www.gyan.dev/ffmpeg/builds/)
+### macOS
+
+1. Download **[MusicStudio-Installer.dmg](https://github.com/sahasbelbase/MusicStudio/releases/latest/download/MusicStudio-Installer.dmg)**, open it and drag **Music Studio** into **Applications**.
+2. The app is not signed with an Apple Developer ID yet, so macOS may say it is *damaged* or *can't be opened*. Run this once in **Terminal**, then open the app normally:
+
+   ```bash
+   xattr -cr "/Applications/Music Studio.app"
+   ```
+
+   This only removes the "downloaded from the internet" flag that macOS adds to the app.
+
+### Windows
+
+1. Download **[MusicStudio-Setup.exe](https://github.com/sahasbelbase/MusicStudio/releases/latest/download/MusicStudio-Setup.exe)** and run it.
+2. If Windows shows *"Windows protected your PC"*, click **More info → Run anyway** (the installer is not code-signed yet).
+
+Everything the app needs (Python, FFmpeg, the download engine) is inside the app. Nothing else has to be installed.
+
+### Android
+
+Install **[MusicStudio.apk](https://github.com/sahasbelbase/MusicStudio/releases/latest/download/MusicStudio.apk)** (Android 7.0+). The Android app plays music stored on the phone.
 
 ---
 
-## 🚀 Quick Start
+## Features
 
-### 1. Launch the Local Web Studio
+### Player
+
+- Smart Transition between songs: blends songs that fit together, echoes out on the beat when the genre or tempo changes a lot, lets songs that fade out end naturally, plays albums gaplessly, skips silence at the start and end of songs, and evens out loudness.
+- Queue you can search, reorder and edit, with *Up next* in the full-screen player.
+- Shuffle and repeat, a mini player and a full-screen player, lock-screen and media-key controls on macOS.
+- Remembers the last song, queue and settings between launches.
+
+### Library
+
+- Search, sort and browse by songs, artists, albums, genres and playlists.
+- *Play* and *Shuffle* for the whole library or just your search results.
+- Create playlists and pick songs from your library or the web while creating them.
+- *Most Played*: a playlist of your top 100 songs, built automatically.
+
+### Discover & Downloader
+
+- Charts, curated playlists and search across Deezer and YouTube (including independent and regional releases that are only on YouTube).
+- Paste a YouTube, YouTube Music or Spotify link (song, album or playlist) to download it.
+- Downloads queue up one after another; *Stop* cancels the current download and everything waiting.
+- 320 kbps MP3 with title, artist, album, year, genre and 1000×1000 cover art.
+- Already-downloaded songs are skipped, and downloading a playlist asks before downloading songs you already have.
+
+### Keeps working by itself
+
+- The download engine (yt-dlp) updates itself in the background, and repairs itself when YouTube or Spotify change something.
+- The app checks for new versions when it opens; you can also check in **Settings → App Updates**.
+
+---
+
+## Run from source
+
+Requires Python 3.11 and FFmpeg (`brew install ffmpeg`, `winget install Gyan.FFmpeg`, or `sudo apt install ffmpeg`).
+
 ```bash
-# Clone the repository
-git clone https://github.com/sahasbelbase/MusicDownloder.git
-cd MusicDownloder
-
-# Install Python dependencies
+git clone https://github.com/sahasbelbase/MusicStudio.git
+cd MusicStudio
 pip install -r requirements.txt
 
-# Start the server
-python3 app.py
+python3 desktop_app.py     # desktop window
+# or
+python3 app.py             # then open http://localhost:5050 in a browser
 ```
-Open **[http://localhost:5000](http://localhost:5000)** in your browser.
 
----
+### Command line
 
-### 2. Standalone Desktop Applications
-
-#### macOS App with Notch Dynamic Island HUD:
 ```bash
-python3 desktop_app.py
+python3 download_playlist.py "https://music.youtube.com/playlist?list=PLAYLIST_ID"
+python3 download_playlist.py "https://open.spotify.com/playlist/PLAYLIST_ID" --threads 4
+python3 fix_metadata.py    # add artwork and tags to MP3s you already have
 ```
-Or mount and run [**`releases/MusicStudio-macOS.dmg`**](releases/MusicStudio-macOS.dmg).
-
-#### Windows Launcher:
-Double-click [**`releases/MusicStudio.exe`**](releases/MusicStudio.exe) or extract [**`releases/MusicStudio-Windows-x64.zip`**](releases/MusicStudio-Windows-x64.zip).
-
----
-
-### 3. Mobile Apps (Android & iOS)
-
-#### Android:
-Install [**`releases/MusicStudio.apk`**](releases/MusicStudio.apk) on your Android device.
-
-To build from source:
-```bash
-npm install
-npx cap copy android
-cd android && ./gradlew assembleDebug
-```
-
-#### iPhone & iOS:
-Extract [**`releases/MusicStudio-iOS.zip`**](releases/MusicStudio-iOS.zip), open `ios/App/App.xcodeproj` in **Xcode**, select your connected iPhone, and click **Run**.
-
----
-
-### 4. Command-Line (CLI) Downloader
-
-#### Download a Playlist (Default: 3 threads, latest songs first):
-```bash
-python3 download_playlist.py "https://music.youtube.com/playlist?list=YOUR_PLAYLIST_ID"
-```
-
-#### Download a Spotify Playlist or Album:
-```bash
-python3 download_playlist.py "https://open.spotify.com/playlist/YOUR_PLAYLIST_ID" --threads 4
-```
-
-#### Download only the Top 25 Newest Songs:
-```bash
-python3 download_playlist.py --limit 25
-```
-
-#### Enrich Existing MP3s with HD Apple Music Artwork:
-```bash
-python3 fix_metadata.py
-```
-
----
-
-## ⚙️ CLI Options
 
 | Flag | Short | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `url` | - | *Default URL* | Spotify / YouTube Music playlist, album, or track URL |
-| `--output` | `-o` | `./Songs` | Destination folder for downloaded MP3s |
-| `--threads` | `-t` | `3` | Number of concurrent download workers |
-| `--quality` | `-q` | `320k` | Audio bitrate (320k, 256k, 192k) |
-| `--sort` | `-s` | `latest` | Sort order: `latest` (newest additions first) or `oldest` |
-| `--naming` | `-n` | `title` | File naming format: `title` (Song.mp3) or `artist-title` |
-| `--limit` | `-l` | `None` | Max number of tracks to download |
+| `url` | | | Spotify, YouTube or YouTube Music link (song, album or playlist) |
+| `--output` | `-o` | `~/Music/Music Studio` | Folder for downloaded MP3s |
+| `--threads` | `-t` | `3` | Songs downloaded at the same time |
+| `--quality` | `-q` | `320k` | Bitrate: `320k`, `256k` or `192k` |
+| `--sort` | `-s` | `latest` | `latest` (newest additions first) or `oldest` |
+| `--naming` | `-n` | `title` | File names: `title` or `artist-title` |
+| `--limit` | `-l` | | Download at most this many songs |
 
----
+### Build the apps
 
-## 📂 Project Structure
-
-```
-MusicDownloder/
-├── app.py                 # FastAPI backend server with SSE streaming & play stats
-├── desktop_app.py         # macOS/Windows native desktop GUI window launcher
-├── mac_notch.py           # Hardware Mac notch Dynamic Island HUD controller
-├── discovery.py           # Spotify & YouTube Music public paginated scraper
-├── download_playlist.py   # Multi-threaded download and stream conversion engine
-├── fix_metadata.py        # Apple Music studio metadata and 1000x1000 HD art tagger
-├── ssl_helper.py          # Universal SSL certificate verification helper
-├── static/                # Responsive glassmorphism frontend application
-│   ├── index.html         # Modern web/mobile dashboard
-│   ├── style.css          # Responsive styling (desktop, tablet, mobile safe-areas)
-│   ├── app.js             # Player engine, SSE client, offline detection & stats
-│   └── notch_hud.html     # Mac Notch Dynamic Island HUD interface
-├── android/               # Native Android Capacitor 8 project
-├── ios/                   # Native iOS Capacitor 8 Xcode project
-├── releases/              # Compiled distributables (APK, DMG, iOS zip, Windows zip/exe)
-│   ├── README.md          # Multi-platform installation & sharing guide
-│   ├── MusicStudio.apk    # Android release APK (4.0 MB)
-│   ├── MusicStudio-macOS.dmg # Apple Silicon disk image (69 MB)
-│   ├── MusicStudio-iOS.zip   # Xcode iPhone project package
-│   ├── MusicStudio-Windows-x64.zip # Portable Windows distribution
-│   └── MusicStudio.exe    # Windows GUI launcher executable
-└── Songs/                 # Output folder for downloaded 320kbps MP3s
+```bash
+./package_dmg.sh                  # macOS: dist/MusicStudio-Installer.dmg
+installer\build_installer.bat     # Windows: dist\MusicStudio-Setup.exe (needs NSIS)
 ```
 
 ---
 
-## 🚢 Releasing a New Version
+## Releasing a new version
 
 1. Push a version tag: `git tag v1.0.1 && git push origin v1.0.1`
-2. GitHub Actions stamps that version into the app, builds the macOS `.dmg` and the Windows installer, and attaches them to a GitHub release.
-3. Installed copies check for the newer release every time they open and show an update banner. Users can also check any time in **Settings → App Updates**.
+2. GitHub Actions builds the macOS `.dmg` and the Windows installer with that version and publishes them as a GitHub release.
+3. Installed copies notice the new release the next time they open.
 
 ---
 
-## 📄 License
+## Contributing
 
-This project is licensed under the MIT License.
+Contributions are welcome:
+
+1. Fork the repository and create a branch (`git checkout -b fix/my-change`).
+2. Make your change and check it in the app (`python3 desktop_app.py`).
+3. Open a pull request describing what changed and why.
+
+Bug reports and ideas are welcome in [Issues](https://github.com/sahasbelbase/MusicStudio/issues).
+
+### Contributors
+
+Thank you to everyone who has helped build Music Studio.
+
+[![Contributors](https://contrib.rocks/image?repo=sahasbelbase/MusicStudio)](https://github.com/sahasbelbase/MusicStudio/graphs/contributors)
+
+---
+
+## Project structure
+
+```text
+MusicStudio/
+├── desktop_app.py          # Desktop window (pywebview) that runs the local server
+├── app.py                  # Local API server (FastAPI): library, streaming, downloads, playlists
+├── download_playlist.py    # Spotify / YouTube extraction and the MP3 download pipeline (also a CLI)
+├── discovery.py            # Charts, playlists and search (Deezer + YouTube)
+├── audio_analysis.py       # Loudness, tempo, beats and silence for Smart Transition
+├── updater.py              # Self-updating download engine, JavaScript runtime, app update check
+├── fix_metadata.py         # Artwork and tag enrichment (iTunes catalogue)
+├── static/                 # The app's interface (HTML, CSS, JavaScript)
+├── installer/              # Windows installer (NSIS)
+├── scripts/                # Release helpers
+├── .github/workflows/      # Builds and publishes releases
+├── android/ · ios/         # Mobile apps (Capacitor)
+└── architecture.md         # How it all fits together
+```
+
+See [architecture.md](architecture.md) for the design.
+
+---
+
+## Third-party software
+
+| Component | Used for | License |
+| :--- | :--- | :--- |
+| [yt-dlp](https://github.com/yt-dlp/yt-dlp) | Reading and downloading from YouTube | Unlicense |
+| [FFmpeg](https://ffmpeg.org) | Audio conversion and analysis | LGPL/GPL |
+| [QuickJS-NG](https://github.com/quickjs-ng/quickjs) | JavaScript runtime for yt-dlp, downloaded when no other runtime is installed | MIT |
+| [SpotAPI](https://github.com/Aran404/SpotAPI) | Reading full Spotify playlists and albums | GPL-3.0 |
+| [FastAPI](https://fastapi.tiangolo.com), [pywebview](https://pywebview.flowrl.com), [mutagen](https://github.com/quodlibet/mutagen) | Server, desktop window, MP3 tags | MIT / BSD / GPL-2.0 |
+
+## License
+
+Music Studio is released under the [MIT License](LICENSE).

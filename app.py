@@ -135,69 +135,65 @@ settings_lock = Lock()
 
 def load_settings() -> Dict:
     with settings_lock:
-        if not os.path.exists(SETTINGS_FILE):
-            return {}
+        return _read_json(SETTINGS_FILE, {})
+
+def _write_json_atomic(path: str, data) -> None:
+    """
+    Write JSON so that quitting or crashing mid-save can never leave a half-written file:
+    write a temp file, then swap it in. The previous version is kept as <file>.bak.
+    """
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    if os.path.exists(path):
+        os.replace(path, f"{path}.bak")
+    os.replace(tmp, path)
+
+def _read_json(path: str, default):
+    """Read JSON, falling back to the last good copy (<file>.bak) if the file is missing or unreadable."""
+    for candidate in (path, f"{path}.bak"):
         try:
-            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            with open(candidate, "r", encoding="utf-8") as f:
                 return json.load(f)
+        except FileNotFoundError:
+            continue
         except Exception as e:
-            print(f"Error loading settings: {e}")
-            return {}
+            print(f"Could not read {candidate}: {e}")
+    return default
 
 def save_settings(settings_data: Dict):
     with settings_lock:
         try:
-            cur = {}
-            if os.path.exists(SETTINGS_FILE):
-                try:
-                    with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                        cur = json.load(f)
-                except Exception:
-                    cur = {}
+            cur = _read_json(SETTINGS_FILE, {})
             cur.update(settings_data)
-            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-                json.dump(cur, f, indent=2, ensure_ascii=False)
+            _write_json_atomic(SETTINGS_FILE, cur)
         except Exception as e:
             print(f"Error saving settings: {e}")
 
 def load_play_stats() -> Dict[str, Dict]:
     with play_stats_lock:
-        if not os.path.exists(PLAY_STATS_FILE):
-            return {}
-        try:
-            with open(PLAY_STATS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"Error loading play stats: {e}")
-            return {}
+        return _read_json(PLAY_STATS_FILE, {})
 
 def save_play_stats(stats: Dict[str, Dict]):
     with play_stats_lock:
         try:
-            with open(PLAY_STATS_FILE, "w", encoding="utf-8") as f:
-                json.dump(stats, f, indent=2, ensure_ascii=False)
+            _write_json_atomic(PLAY_STATS_FILE, stats)
         except Exception as e:
             print(f"Error saving play stats: {e}")
 
 def load_playlists() -> List[Dict]:
     with playlists_lock:
-        if not os.path.exists(PLAYLISTS_FILE):
-            return []
-        try:
-            with open(PLAYLISTS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                for pl in data:
-                    pl["is_custom"] = (pl.get("type") == "custom")
-                return data
-        except Exception as e:
-            print(f"Error loading playlists: {e}")
-            return []
+        data = _read_json(PLAYLISTS_FILE, [])
+        for pl in data:
+            pl["is_custom"] = (pl.get("type") == "custom")
+        return data
 
 def save_playlists(playlists: List[Dict]):
     with playlists_lock:
         try:
-            with open(PLAYLISTS_FILE, "w", encoding="utf-8") as f:
-                json.dump(playlists, f, indent=2, ensure_ascii=False)
+            _write_json_atomic(PLAYLISTS_FILE, playlists)
         except Exception as e:
             print(f"Error saving playlists: {e}")
 
