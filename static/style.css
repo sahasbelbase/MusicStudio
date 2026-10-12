@@ -5461,62 +5461,11 @@ body.album-modal-open #playlist-modal .modal-window {
   backdrop-filter: blur(6px);
 }
 
-/* Search box inside the album / playlist modal */
-.modal-search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0 20px 10px;
-  padding: 8px 14px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  color: var(--text-tertiary);
-  max-width: 360px;
+/* Search box inside the album / playlist modal (same look as the library search) */
+.modal-search-wrap {
+  max-width: none;
+  margin: 14px 24px 12px;
+  padding: 10px 18px;
+  flex: none;
 }
-.modal-search:focus-within { border-color: rgba(16, 185, 129, 0.5); }
-.modal-search input {
-  flex: 1;
-  min-width: 0;
-  background: transparent;
-  border: none;
-  outline: none;
-  color: var(--text-primary);
-  font: inherit;
-  font-size: 0.85rem;
-}
-
-/* Fullscreen player: drawers and dialogs opened from it must sit above it */
-body.fs-open .drawer-overlay { z-index: 1890; }
-body.fs-open .track-drawer { z-index: 1895; }
-body.fs-open .modal-root { z-index: 2000; }
-
-.fs-icon-btn.fs-queue-labeled {
-  width: auto;
-  padding: 0 14px 0 11px;
-  border-radius: 999px;
-  gap: 7px;
-}
-.fs-queue-label { font-size: 0.8rem; font-weight: 600; }
-
-.fs-up-next {
-  align-items: center;
-  gap: 8px;
-  max-width: min(520px, 86vw);
-  margin-top: 10px;
-  padding: 6px 14px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.07);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: var(--text-secondary);
-  font-size: 0.8rem;
-  cursor: pointer;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.fs-up-next:hover { background: rgba(255, 255, 255, 0.12); color: var(--text-primary); }
-.fs-up-next-label { color: var(--accent-emerald, #10b981); font-weight: 800; font-size: 0.68rem; letter-spacing: 0.08em; }
-
-/* Queue header: the shared close button is absolutely positioned elsewhere; keep it in the flow here */
-.queue-header .drawer-close-btn { position: static; }
+.modal-search-wrap input { font-size: 0.95rem; }

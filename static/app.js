@@ -3726,11 +3726,22 @@ document.addEventListener('DOMContentLoaded', () => {
   function renderModalTracklist(tracks) {
     modalAllTracks = tracks || [];
     if (modalSearch) modalSearch.value = '';
+    if (modalSearchClear) modalSearchClear.style.display = 'none';
     renderModalRows(modalAllTracks);
+  }
+
+  const modalSearchClear = document.getElementById('modal-search-clear');
+  if (modalSearchClear) {
+    modalSearchClear.addEventListener('click', () => {
+      modalSearch.value = '';
+      modalSearch.dispatchEvent(new Event('input'));
+      modalSearch.focus();
+    });
   }
 
   if (modalSearch) {
     modalSearch.addEventListener('input', () => {
+      if (modalSearchClear) modalSearchClear.style.display = modalSearch.value ? 'block' : 'none';
       const q = modalSearch.value.trim().toLowerCase();
       renderModalRows(q ? modalAllTracks.filter(t =>
         (t.title || '').toLowerCase().includes(q) ||
