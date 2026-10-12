@@ -6,7 +6,7 @@
 !define APP_NAME        "Music Studio"
 !define APP_VERSION     "1.0.0"
 !define APP_PUBLISHER   "Music Studio"
-!define APP_URL         "https://github.com/sahasbelbase/MusicDownloder"
+!define APP_URL         "https://github.com/sahasbelbase/MusicStudio"
 !define UNINSTALLER_EXE "Uninstall Music Studio.exe"
 !define REG_KEY         "Software\Microsoft\Windows\CurrentVersion\Uninstall\MusicStudio"
 
@@ -14,7 +14,7 @@
 ; Compiler Settings
 ; ============================================================
 Name "${APP_NAME}"
-OutFile "..\releases\MusicStudio-Setup.exe"
+OutFile "..\dist\MusicStudio-Setup.exe"
 InstallDir "$PROGRAMFILES64\MusicStudio"
 InstallDirRegKey HKCU "Software\MusicStudio" "InstallDir"
 RequestExecutionLevel admin
@@ -92,77 +92,25 @@ VIAddVersionKey /LANG=${LANG_ENGLISH} "ProductVersion"   "${APP_VERSION}"
 Section "Core Application" SecCore
     SectionIn RO   ; Cannot be deselected
 
-    ; ---- Step 1: Copy application files ----
+    ; Remove leftovers of the old script-based install (embedded Python + loose .py files)
+    RMDir /r "$INSTDIR\runtime"
+    RMDir /r "$INSTDIR\static"
+    RMDir /r "$INSTDIR\data"
+    Delete "$INSTDIR\*.py"
+    Delete "$INSTDIR\MusicStudio.bat"
+    Delete "$INSTDIR\MusicStudioLaunch.vbs"
+    Delete "$INSTDIR\requirements.txt"
+
     SetDetailsPrint textonly
-    DetailPrint "Copying Music Studio application files..."
+    DetailPrint "Copying Music Studio..."
     SetDetailsPrint listonly
 
+    ; One self-contained executable: Python, every package, FFmpeg and the UI are inside it.
+    ; Nothing is downloaded or installed on first run. Songs live in the user's Music folder.
     SetOutPath "$INSTDIR"
-    File "..\app.py"
-    File "..\desktop_app.py"
-    File "..\discovery.py"
-    File "..\download_playlist.py"
-    File "..\fix_metadata.py"
-    File "..\ssl_helper.py"
-    File "..\requirements.txt"
+    File "..\dist\MusicStudio.exe"
     File "..\LICENSE"
     File "..\MusicStudio.ico"
-    File "..\MusicStudio.png"
-    File "..\MusicStudio.bat"
-    File "..\MusicStudio.exe"
-
-    ; Static frontend
-    SetOutPath "$INSTDIR\static"
-    File /r "..\static\*.*"
-
-    ; Empty data and Songs directories
-    SetOutPath "$INSTDIR\data"
-    SetOutPath "$INSTDIR\Songs"
-
-    ; ---- Step 2: Install bundled Python runtime & all packages ----
-    SetDetailsPrint textonly
-    DetailPrint "Installing Python runtime and pre-bundled packages..."
-    SetDetailsPrint listonly
-
-    SetOutPath "$INSTDIR\runtime"
-    File /r "python_embed\*.*"
-
-    ; ---- Step 3: Verify and finalize environment ----
-    SetDetailsPrint textonly
-    DetailPrint "Configuring Music Studio components..."
-    SetDetailsPrint listonly
-
-    ; Fast verification check
-    nsExec::ExecToLog '"$INSTDIR\runtime\python.exe" -c "import uvicorn, fastapi, webview, mutagen, yt_dlp, PIL, imageio_ffmpeg, pydantic, certifi"'
-    Pop $0
-
-    ${If} $0 != 0
-        ; Fallback: Silent install from requirements.txt if any package was missing
-        DetailPrint "Finalizing dependencies..."
-        nsExec::ExecToLog '"$INSTDIR\runtime\python.exe" -m pip install --no-warn-script-location -r "$INSTDIR\requirements.txt"'
-        Pop $0
-    ${EndIf}
-
-    ; ---- Step 4: Create silent launcher fallback ----
-    SetDetailsPrint textonly
-    DetailPrint "Creating application launcher..."
-    SetDetailsPrint listonly
-
-    SetOutPath "$INSTDIR"
-    FileOpen $0 "$INSTDIR\MusicStudioLaunch.vbs" w
-    FileWrite $0 "Option Explicit$\r$\n"
-    FileWrite $0 "Dim WshShell, fso, appDir, exePath$\r$\n"
-    FileWrite $0 "Set fso = CreateObject($\"Scripting.FileSystemObject$\")$\r$\n"
-    FileWrite $0 "Set WshShell = CreateObject($\"WScript.Shell$\")$\r$\n"
-    FileWrite $0 "appDir = fso.GetParentFolderName(WScript.ScriptFullName)$\r$\n"
-    FileWrite $0 "exePath = appDir & $\"\MusicStudio.exe$\"$\r$\n"
-    FileWrite $0 "WshShell.CurrentDirectory = appDir$\r$\n"
-    FileWrite $0 "If fso.FileExists(exePath) Then$\r$\n"
-    FileWrite $0 "    WshShell.Run Chr(34) & exePath & Chr(34), 0, False$\r$\n"
-    FileWrite $0 "Else$\r$\n"
-    FileWrite $0 "    WshShell.Run Chr(34) & appDir & $\"\MusicStudio.bat$\" & Chr(34), 0, False$\r$\n"
-    FileWrite $0 "End If$\r$\n"
-    FileClose $0
 
     ; ---- Step 5: Create Desktop Shortcut ----
     SetDetailsPrint textonly
@@ -226,33 +174,12 @@ SectionEnd
 
 Section "Uninstall"
 
-    Delete "$INSTDIR\app.py"
-    Delete "$INSTDIR\desktop_app.py"
-    Delete "$INSTDIR\discovery.py"
-    Delete "$INSTDIR\download_playlist.py"
-    Delete "$INSTDIR\fix_metadata.py"
-    Delete "$INSTDIR\ssl_helper.py"
-    Delete "$INSTDIR\requirements.txt"
-    Delete "$INSTDIR\LICENSE"
-    Delete "$INSTDIR\MusicStudio.ico"
-    Delete "$INSTDIR\MusicStudio.png"
-    Delete "$INSTDIR\MusicStudioLaunch.vbs"
-    Delete "$INSTDIR\MusicStudio.bat"
     Delete "$INSTDIR\MusicStudio.exe"
+    Delete "$INSTDIR\MusicStudio.ico"
+    Delete "$INSTDIR\LICENSE"
     Delete "$INSTDIR\${UNINSTALLER_EXE}"
-
-    RMDir /r "$INSTDIR\static"
-    RMDir /r "$INSTDIR\runtime"
-    RMDir /r "$INSTDIR\data"
-    RMDir /r "$INSTDIR\__pycache__"
-
-    MessageBox MB_YESNO|MB_ICONQUESTION \
-        "Do you want to delete your downloaded Songs folder?$\r$\n$\r$\nLocation: $INSTDIR\Songs$\r$\n$\r$\nSelect No to keep your downloaded music." \
-        IDNO keep_songs
-        RMDir /r "$INSTDIR\Songs"
-    keep_songs:
-
     RMDir "$INSTDIR"
+    ; Downloaded songs are in Music\Music Studio and are never touched by the uninstaller.
 
     Delete "$DESKTOP\Music Studio.lnk"
 

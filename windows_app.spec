@@ -20,6 +20,7 @@ if ffmpeg_win and os.path.exists(ffmpeg_win):
 
 datas = [
     (os.path.join(BASE_DIR, 'static'), 'static'),
+    (os.path.join(BASE_DIR, 'MusicStudio.ico'), '.'),
 ]
 
 hiddenimports = [
@@ -55,6 +56,8 @@ hiddenimports = [
     'download_playlist',
     'discovery',
     'fix_metadata',
+    'ssl_helper',
+    'updater',
 ]
 
 a = Analysis(

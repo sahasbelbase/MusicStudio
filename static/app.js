@@ -9,9 +9,8 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ==================== UNIVERSAL API & SERVER ROUTING ====================
+  // The app only talks to its own local server (same origin); there is no remote/PC connection mode.
   function getServerBaseUrl() {
-    const custom = (localStorage.getItem('musicstudio_server_url') || '').trim();
-    if (custom) return custom.replace(/\/+$/, '');
     return '';
   }
 
@@ -5694,83 +5693,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (forceOfflineToggle) {
       forceOfflineToggle.addEventListener('change', (e) => {
         applyOfflineState(e.target.checked || !navigator.onLine);
-      });
-    }
-
-    // Server URL configuration in Settings
-    const serverUrlInput = document.getElementById('setting-server-url');
-    const saveServerUrlBtn = document.getElementById('btn-save-server-url');
-    const testServerUrlBtn = document.getElementById('btn-test-server-url');
-
-    if (serverUrlInput) {
-      const stored = localStorage.getItem('musicstudio_server_url') || '';
-      // Only default to origin if NOT on mobile / capacitor localhost
-      if (stored) {
-        serverUrlInput.value = stored;
-      } else if (!isMobilePlatform && window.location.origin && !window.location.origin.includes('localhost:80')) {
-        serverUrlInput.value = window.location.origin;
-      } else {
-        serverUrlInput.value = '';
-      }
-    }
-
-    if (saveServerUrlBtn && serverUrlInput) {
-      saveServerUrlBtn.addEventListener('click', () => {
-        let val = serverUrlInput.value.trim();
-        if (val) {
-          if (!val.startsWith('http://') && !val.startsWith('https://')) {
-            val = 'http://' + val;
-            serverUrlInput.value = val;
-          }
-          val = val.replace(/\/+$/, '');
-          localStorage.setItem('musicstudio_server_url', val);
-          showToast(`Server URL saved: ${val}`, 'success');
-          loadLibrary();
-          loadExplore();
-          loadUserPlaylists();
-        } else {
-          localStorage.removeItem('musicstudio_server_url');
-          showToast('Server URL cleared (Standalone Mode)', 'info');
-        }
-      });
-    }
-
-    if (testServerUrlBtn && serverUrlInput) {
-      testServerUrlBtn.addEventListener('click', async () => {
-        let val = serverUrlInput.value.trim();
-        if (!val) {
-          showToast('Please enter your computer\'s Wi-Fi address (e.g. http://192.168.1.xxx:5050)', 'warning');
-          return;
-        }
-        if (!val.startsWith('http://') && !val.startsWith('https://')) {
-          val = 'http://' + val;
-          serverUrlInput.value = val;
-        }
-        val = val.replace(/\/+$/, '');
-        testServerUrlBtn.disabled = true;
-        testServerUrlBtn.textContent = 'Connecting...';
-        try {
-          const res = await nativeFetch(`${val}/api/playlists`);
-          const contentType = res.headers.get('content-type') || '';
-          if (res.ok && contentType.includes('application/json')) {
-            localStorage.setItem('musicstudio_server_url', val);
-            showToast('✅ Connected to Music Studio PC Server! Syncing...', 'success');
-            testServerUrlBtn.textContent = 'Connected!';
-            loadLibrary();
-            loadExplore();
-            loadUserPlaylists();
-          } else {
-            throw new Error(`Server returned HTTP ${res.status}`);
-          }
-        } catch (err) {
-          showToast(`❌ Cannot reach ${val}. Check Wi-Fi and port 5050.`, 'error');
-          testServerUrlBtn.textContent = 'Failed';
-        } finally {
-          setTimeout(() => {
-            testServerUrlBtn.disabled = false;
-            testServerUrlBtn.textContent = 'Test Connection';
-          }, 3000);
-        }
       });
     }
 

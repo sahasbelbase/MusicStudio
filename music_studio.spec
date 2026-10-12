@@ -26,6 +26,8 @@ datas = [
 ]
 
 hiddenimports = [
+    'updater',
+    'ssl_helper',
     'uvicorn',
     'uvicorn.logging',
     'uvicorn.loops',

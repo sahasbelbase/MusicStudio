@@ -16,20 +16,6 @@ BASE_DIR = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
-# ── Bundled runtime site-packages (installer drops packages here) ──────────────
-# When launched via MusicStudioLaunch.vbs or MusicStudio.exe with the embedded
-# Python runtime, packages are installed into runtime\Lib\site-packages via
-# `pip install --target`. We add this to sys.path so imports always resolve.
-_runtime_site_pkgs = os.path.join(BASE_DIR, "runtime", "Lib", "site-packages")
-if os.path.isdir(_runtime_site_pkgs) and _runtime_site_pkgs not in sys.path:
-    sys.path.insert(0, _runtime_site_pkgs)
-
-# Also support a flat runtime/ directory (some pip --target layouts put .dist-info at root)
-_runtime_dir = os.path.join(BASE_DIR, "runtime")
-if os.path.isdir(_runtime_dir) and _runtime_dir not in sys.path:
-    sys.path.insert(0, _runtime_dir)
-
-
 # Set Windows AppUserModelID so taskbar groups properly under Music Studio icon
 if sys.platform == 'win32':
     try:

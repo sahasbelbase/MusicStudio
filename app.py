@@ -61,13 +61,25 @@ def _silent_engine_update():
             pass
     Thread(target=run, daemon=True).start()
 
+# The server is local-only: this machine's own window/browser may call it, nothing else.
+LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]"}
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=r"^(https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?|capacitor://localhost)$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def reject_non_local_hosts(request: Request, call_next):
+    # Blocks DNS-rebinding: a web page can't reach the API through a hostname that points at 127.0.0.1
+    raw_host = request.headers.get("host") or ""
+    host = "[::1]" if raw_host.startswith("[") else raw_host.rsplit(":", 1)[0]
+    if host not in LOCAL_HOSTS:
+        return JSONResponse({"detail": "Forbidden"}, status_code=403)
+    return await call_next(request)
 
 @app.middleware("http")
 async def add_no_cache_header(request, call_next):
@@ -2022,18 +2034,7 @@ def serve_index():
 
 if __name__ == "__main__":
     import uvicorn
-    import socket
     PORT = int(os.environ.get("PORT", 5050))
-    local_ip = "127.0.0.1"
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        local_ip = s.getsockname()[0]
-        s.close()
-    except Exception:
-        pass
-
     print(f"\n🚀 Starting Music Studio Web Server on http://localhost:{PORT}")
-    print(f"📱 Mobile / Wi-Fi Connection: http://{local_ip}:{PORT}")
     print("📁 Destination folder:", SONGS_DIR)
-    uvicorn.run("app:app", host="0.0.0.0", port=PORT, reload=False, log_level="info")
+    uvicorn.run("app:app", host="127.0.0.1", port=PORT, reload=False, log_level="info")

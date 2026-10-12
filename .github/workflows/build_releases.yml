@@ -1,4 +1,4 @@
-name: Build Desktop Releases (macOS DMG & Windows EXE)
+name: Build Desktop Releases (macOS DMG & Windows installer)
 
 on:
   workflow_dispatch:
@@ -10,15 +10,13 @@ jobs:
   build-macos:
     runs-on: macos-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install Dependencies
+      - name: Install dependencies
         run: |
           brew install ffmpeg
           python -m pip install --upgrade pip
@@ -30,8 +28,7 @@ jobs:
           chmod +x package_dmg.sh
           ./package_dmg.sh
 
-      - name: Upload macOS DMG Artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: MusicStudio-macOS-DMG
           path: dist/MusicStudio-Installer.dmg
@@ -39,34 +36,53 @@ jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install FFmpeg on Windows
-        run: |
-          choco install ffmpeg -y
+      - name: Install FFmpeg and NSIS
+        run: choco install ffmpeg nsis -y
 
-      - name: Install Python Dependencies
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller pywebview
 
-      - name: Build Windows Standalone Executable
-        run: |
-          pyinstaller --clean -y windows_app.spec
+      # Everything (Python, packages, FFmpeg, UI) is inside this one exe: nothing is installed on first run
+      - name: Build standalone MusicStudio.exe
+        run: pyinstaller --clean -y windows_app.spec
 
-      - name: Package Windows ZIP
+      - name: Build installer
         run: |
-          Compress-Archive -Path dist/MusicStudio.exe -DestinationPath dist/MusicStudio-Windows.zip
+          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" installer\MusicStudio_Installer.nsi
 
-      - name: Upload Windows Executable Artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: MusicStudio-Windows-EXE
-          path: dist/MusicStudio-Windows.zip
+          name: MusicStudio-Windows
+          path: |
+            dist/MusicStudio-Setup.exe
+            dist/MusicStudio.exe
+
+  publish:
+    # On a version tag, attach the finished builds to the GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/MusicStudio-macOS-DMG/MusicStudio-Installer.dmg
+            artifacts/MusicStudio-Windows/MusicStudio-Setup.exe
+            artifacts/MusicStudio-Windows/MusicStudio.exe
