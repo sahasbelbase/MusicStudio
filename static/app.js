@@ -1321,8 +1321,8 @@ document.addEventListener('DOMContentLoaded', () => {
     [playerTransitionBtn, fsTransitionBtn].forEach(btn => {
       if (btn) {
         btn.title = transitionMode
-          ? 'Smart Transition: ON — Dynamic hook cueing & DJ crossfade active (T)'
-          : 'Smart Transition: OFF — Click to enable (T)';
+          ? 'Smart Transition: On (T)'
+          : 'Smart Transition: Off (T)';
       }
     });
     saveCurrentPlaybackState();
@@ -1403,8 +1403,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function updateTransitionBtnState() {
     const label = transitionMode
-      ? 'Smart Transition: ON — Dynamic hook cueing, filter swap & echo FX active (T)'
-      : 'Smart Transition: OFF — Click to enable (T)';
+      ? 'Smart Transition: On (T)'
+      : 'Smart Transition: Off (T)';
     [playerTransitionBtn, fsTransitionBtn].forEach(btn => {
       if (!btn) return;
       btn.classList.toggle('active', transitionMode);
@@ -1420,13 +1420,13 @@ document.addEventListener('DOMContentLoaded', () => {
     if (transitionMode) {
       djAudioFx.init();
       djAudioFx.resume();
-      showToast('✨ Smart DJ Transition ON — Dynamic hook cueing, filter swap & echo FX active', 'success');
+      showToast('Smart Transition on', 'success');
       const currentSong = isOnlineStreaming
         ? currentStreamingTrack
         : (librarySongs[currentSongIndex] || null);
       if (currentSong) applySmartTransition(currentSong);
     } else {
-      showToast('Smart Transition OFF — Standard playback', 'info');
+      showToast('Smart Transition off', 'info');
       cancelCrossfade();
       resetAmbientOrbs();
     }
@@ -1788,7 +1788,7 @@ document.addEventListener('DOMContentLoaded', () => {
         throw new Error(err.detail || 'Enrichment failed');
       }
 
-      showToast('Studio metadata enrichment active!', 'success');
+      showToast('Updating artwork and tags for your library...', 'success');
       statusBadge.className = 'hud-status-badge active-enrich';
       statusBadge.textContent = 'Enriching';
     } catch (e) {
@@ -2410,7 +2410,7 @@ document.addEventListener('DOMContentLoaded', () => {
           </svg>
         </div>
         <p style="font-size: 1rem; font-weight: 700; color: var(--text-primary); margin-top: 10px;">No playlists found</p>
-        <span style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 4px;">Create your personal custom playlist or save curated playlists from Discover</span>
+        <span style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 4px;">Create a playlist, or save one from Discover</span>
         <button class="btn-primary" id="btn-empty-create-pl" style="margin-top: 16px;">+ Create New Playlist</button>
       `;
       const btn = empty.querySelector('#btn-empty-create-pl');
@@ -2711,6 +2711,9 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ==================== CONFIRMATION DIALOG ====================
+  const CONFIRM_ICON_DELETE = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>`;
+  const CONFIRM_ICON_DOWNLOAD = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
+
   function showConfirmDialog(opts) {
     var title = opts.title || 'Confirm Deletion';
     var message = opts.message || 'Are you sure you want to proceed?';
@@ -2719,6 +2722,8 @@ document.addEventListener('DOMContentLoaded', () => {
     var confirmText = opts.confirmText || 'Delete';
     var isDanger = opts.isDanger !== false;
     var onConfirm = opts.onConfirm;
+    var altText = opts.altText;   // optional second choice, e.g. "Download all"
+    var onAlt = opts.onAlt;
 
     if (!confirmModal) {
       if (window.confirm(title + '\n\n' + message)) {
@@ -2741,6 +2746,27 @@ document.addEventListener('DOMContentLoaded', () => {
     if (confirmModalActionBtn) {
       confirmModalActionBtn.textContent = confirmText;
       confirmModalActionBtn.className = isDanger ? 'btn-danger-confirm' : 'btn-primary';
+    }
+    const icon = confirmModal.querySelector('.confirm-modal-icon');
+    if (icon) {
+      icon.classList.toggle('is-neutral', !isDanger);
+      icon.innerHTML = isDanger ? CONFIRM_ICON_DELETE : CONFIRM_ICON_DOWNLOAD;
+    }
+    let altBtn = document.getElementById('confirm-modal-alt-btn');
+    if (!altBtn && confirmModalActionBtn) {
+      altBtn = document.createElement('button');
+      altBtn.type = 'button';
+      altBtn.id = 'confirm-modal-alt-btn';
+      altBtn.className = 'btn-secondary';
+      confirmModalActionBtn.parentNode.insertBefore(altBtn, confirmModalActionBtn);
+    }
+    if (altBtn) {
+      altBtn.style.display = altText ? '' : 'none';
+      altBtn.textContent = altText || '';
+      altBtn.onclick = () => {
+        closeConfirmDialog();
+        if (onAlt) onAlt();
+      };
     }
     currentConfirmCallback = onConfirm;
 
@@ -2800,7 +2826,7 @@ document.addEventListener('DOMContentLoaded', () => {
         isPlaying = false;
         updatePlayIcon(false);
         playerTitle.textContent = 'Select a track to play';
-        playerArtist.textContent = 'Music Studio Engine';
+        playerArtist.textContent = 'Music Studio';
         playerCover.src = 'placeholder.svg';
         if (fsTitle) fsTitle.textContent = 'Select a song to play';
         if (fsArtist) fsArtist.textContent = 'Music Studio';
@@ -3077,7 +3103,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (fsSaveBtn) {
         fsSaveBtn.classList.remove('saved', 'downloading');
         fsSaveBtn.disabled = false;
-        fsSaveBtn.title = 'Save to Library (320 kbps Master)';
+        fsSaveBtn.title = 'Save to library (320 kbps MP3)';
       }
       if (fsSaveText) fsSaveText.textContent = 'Save to Library (320 kbps)';
     }
@@ -3210,7 +3236,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (localMatch) {
       const localIdx = librarySongs.findIndex(s => s.filename === localMatch.filename);
       if (localIdx >= 0) {
-        showToast(`Playing local library file: ${localMatch.title}`, 'info');
+        showToast(`Playing from your library: ${localMatch.title}`, 'info');
         playTrack(localIdx);
         return;
       }
@@ -3268,7 +3294,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (fsCover) fsCover.src = coverUrl;
     if (fsTitle) fsTitle.textContent = track.title || 'Unknown Track';
     if (fsArtist) fsArtist.textContent = track.artist || 'Online Stream';
-    if (fsAlbum) fsAlbum.textContent = track.album || 'Online Stream Master';
+    if (fsAlbum) fsAlbum.textContent = track.album || '';
     if (fsScrubber) {
       fsScrubber.value = 0;
       updateFsScrubberFill(0);
@@ -3285,7 +3311,7 @@ document.addEventListener('DOMContentLoaded', () => {
     setupMediaSession({
       title: track.title || 'Unknown Track',
       artist: track.artist || 'Online Stream',
-      album: track.album || 'Online Stream Master',
+      album: track.album || '',
       artwork_url: coverUrl,
       duration: totalSec
     });
@@ -3303,7 +3329,7 @@ document.addEventListener('DOMContentLoaded', () => {
     refreshQueueDrawerIfOpen();
     primeAnalysis(track);
     broadcastPlaybackState();
-    showToast(`Streaming live: ${track.title} - ${track.artist}`, 'info');
+    showToast(`Streaming: ${track.title}`, 'info');
   }
 
   function previewTrackAudio(track) {
@@ -3683,7 +3709,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (!data) {
       const isAlbum = isAlbumParam || String(playlistId).startsWith('album_') || String(playlistId).startsWith('album-');
-      if (modalBadge) modalBadge.textContent = isAlbum ? 'OFFICIAL ALBUM' : 'CURATED COLLECTION';
+      if (modalBadge) modalBadge.textContent = isAlbum ? 'ALBUM' : 'PLAYLIST';
       modalTitle.textContent = isAlbum ? 'Loading album...' : 'Loading playlist...';
       modalSubtitle.textContent = 'Fetching tracklist and studio metadata...';
       modalTrackCount.textContent = '...';
@@ -3746,13 +3772,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const isAlbType = (data.type === 'album' || isAlbumParam || String(data.id || '').startsWith('album_'));
 
     modalTitle.textContent = data.title;
-    modalSubtitle.textContent = data.subtitle || data.description || (isCustom ? 'Personal Custom Playlist' : (isAlbType ? `${data.artist || 'Artist'} • Album Master` : 'Curated Studio Collection'));
+    modalSubtitle.textContent = data.subtitle || data.description || (isCustom ? 'Your playlist' : (isAlbType ? `${data.artist || 'Album'}` : 'Playlist'));
     modalCover.src = data.cover_url || 'placeholder.svg';
     const count = (data.tracks ? data.tracks.length : (data.track_count || 0));
     modalTrackCount.textContent = `${count} track${count === 1 ? '' : 's'}`;
 
     if (modalBadge) {
-      modalBadge.textContent = isCustom ? 'CUSTOM PLAYLIST' : (isAlbType ? 'OFFICIAL ALBUM' : 'CURATED COLLECTION');
+      modalBadge.textContent = isCustom ? 'YOUR PLAYLIST' : (isAlbType ? 'ALBUM' : 'PLAYLIST');
     }
 
     // Check favorite state
@@ -4024,7 +4050,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       // Clicking row streams track live immediately
-      row.title = `Click to stream "${track.title}" live`;
+      row.title = `Play "${track.title}"`;
       row.addEventListener('click', (e) => {
         if (e.target.closest('button')) return;
         playOnlineTrack(track, tracks, idx);
@@ -4057,6 +4083,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (playlistDescInput) playlistDescInput.value = '';
     if (playlistUrlInput) playlistUrlInput.value = '';
     if (playlistFileInput) playlistFileInput.value = '';
+    resetPlaylistBuilder();
   }
 
   function closeCreatePlaylistModal() {
@@ -4164,8 +4191,12 @@ document.addEventListener('DOMContentLoaded', () => {
           }
         }
 
+        const picked = pbSelected.slice();
+        const addedCount = picked.length ? await addSongsToPlaylist(newPlaylist.id, picked) : 0;
         closeCreatePlaylistModal();
-        showToast(`Playlist "${newPlaylist.title}" created successfully!`, 'success');
+        showToast(addedCount
+          ? `Created "${newPlaylist.title}" with ${addedCount} song${addedCount === 1 ? '' : 's'}`
+          : `Created "${newPlaylist.title}"`, 'success');
 
         // If we had a track waiting to be added, add it now!
         if (trackToAdd) {
@@ -4315,9 +4346,33 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  async function downloadEntirePlaylist(playlistData) {
+  // Songs already in the library are never downloaded twice silently: ask first
+  function downloadEntirePlaylist(playlistData) {
     if (!playlistData || !playlistData.tracks || !playlistData.tracks.length) return;
+    const all = playlistData.tracks;
+    const missing = all.filter(t => !findLocalLibraryMatch(t));
+    if (missing.length === all.length) {
+      startPlaylistDownload(playlistData, all);
+      return;
+    }
+    if (missing.length === 0) {
+      showToast(`Every song in "${playlistData.title}" is already in your library`, 'info');
+      return;
+    }
+    showConfirmDialog({
+      title: 'Some songs are already downloaded',
+      message: `${all.length - missing.length} of ${all.length} songs in this playlist are already in your library.`,
+      itemTitle: playlistData.title,
+      itemSub: `${missing.length} new song${missing.length === 1 ? '' : 's'} to download`,
+      confirmText: `Download ${missing.length} new`,
+      altText: `Download all ${all.length}`,
+      isDanger: false,
+      onConfirm: () => startPlaylistDownload(playlistData, missing),
+      onAlt: () => startPlaylistDownload(playlistData, all),
+    });
+  }
 
+  async function startPlaylistDownload(playlistData, tracks) {
     closePlaylistModal();
 
     try {
@@ -4326,7 +4381,7 @@ document.addEventListener('DOMContentLoaded', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title: playlistData.title,
-          tracks: playlistData.tracks,
+          tracks: tracks,
           threads: parseInt(settingThreads ? settingThreads.value : 3) || 3,
           quality: settingQuality ? settingQuality.value : '320k',
           naming: settingNaming ? settingNaming.value : 'title'
@@ -4341,7 +4396,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const started = await res.json();
       showToast(started.status === 'queued'
         ? `Queued (#${started.position}): "${playlistData.title}" starts when the current download finishes`
-        : `Downloading "${playlistData.title}" (${playlistData.tracks.length} tracks)...`, 'success');
+        : `Downloading "${playlistData.title}" (${tracks.length} tracks)...`, 'success');
       btnStop.style.display = 'inline-flex';
       statusBadge.className = 'hud-status-badge active-download';
       statusBadge.textContent = 'Downloading';
@@ -4576,7 +4631,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (fsCover) fsCover.src = coverUrl;
     if (fsTitle) fsTitle.textContent = song.title || 'Unknown Track';
     if (fsArtist) fsArtist.textContent = song.artist || 'Unknown Artist';
-    if (fsAlbum) fsAlbum.textContent = song.album || 'Music Studio Master';
+    if (fsAlbum) fsAlbum.textContent = song.album || '';
     if (fsScrubber) {
       fsScrubber.value = 0;
       updateFsScrubberFill(0);
@@ -4593,7 +4648,7 @@ document.addEventListener('DOMContentLoaded', () => {
     setupMediaSession({
       title: song.title || 'Unknown Track',
       artist: song.artist || 'Unknown Artist',
-      album: song.album || 'Music Studio Master',
+      album: song.album || '',
       artwork_url: coverUrl,
       duration: song.duration
     });
@@ -5422,7 +5477,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const song = librarySongs[currentSongIndex];
       if (fsTitle) fsTitle.textContent = song.title || 'Unknown Track';
       if (fsArtist) fsArtist.textContent = song.artist || 'Unknown Artist';
-      if (fsAlbum) fsAlbum.textContent = song.album || 'Music Studio Master';
+      if (fsAlbum) fsAlbum.textContent = song.album || '';
       if (fsCover) fsCover.src = (song.cover_url && song.cover_url !== 'placeholder.svg') ? song.cover_url : (song.filename ? resolveApiUrl(`/api/songs/artwork/${encodeURIComponent(song.filename)}`) : 'placeholder.svg');
     }
     updatePlayIcon(isPlaying);
@@ -5917,9 +5972,8 @@ document.addEventListener('DOMContentLoaded', () => {
     updateFsUpNext();
   }
 
-  function addToQueue(track, playNextInLine = false) {
-    if (!track) return;
-    const queueItem = {
+  function makeQueueItem(track) {
+    return {
       id: track.id || ('q_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5)),
       title: track.title || 'Unknown Title',
       artist: track.artist || 'Unknown Artist',
@@ -5935,6 +5989,11 @@ document.addEventListener('DOMContentLoaded', () => {
       is_local_device: Boolean(track.is_local_device),
       file_ref_id: track.file_ref_id || null
     };
+  }
+
+  function addToQueue(track, playNextInLine = false) {
+    if (!track) return;
+    const queueItem = makeQueueItem(track);
 
     if (playNextInLine) {
       userPlayQueue.unshift(queueItem);
@@ -6116,7 +6175,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       } else {
         queueNpTitle.textContent = 'No track selected';
-        queueNpArtist.textContent = 'Music Studio Engine';
+        queueNpArtist.textContent = 'Music Studio';
         if (queueNpCover) queueNpCover.src = 'placeholder.svg';
       }
     }
@@ -6427,6 +6486,204 @@ document.addEventListener('DOMContentLoaded', () => {
       runQueueSearch();
       queueSearchInput.focus();
     });
+  }
+
+  // ==================== LIBRARY: PLAY / SHUFFLE PLAY ====================
+  // Plays the whole library, or only the search results when a search is active
+  // (those become the queue, so playback stays inside the results).
+  function setShuffle(on) {
+    if (isShuffle === on) return;
+    isShuffle = on;
+    localStorage.setItem('musicstudio_shuffle', on ? 'true' : 'false');
+    onlineShuffleList = null;
+    updateShuffleUI();
+    onPlaybackOrderChanged();
+  }
+
+  function playLibrary(shuffle) {
+    const songs = visibleSongs.slice();
+    if (!songs.length) {
+      showToast('No songs to play', 'info');
+      return;
+    }
+    const searching = Boolean((librarySearch.value || '').trim());
+    if (searching) {
+      const order = shuffle ? songs.sort(() => Math.random() - 0.5) : songs;
+      userPlayQueue = order.slice(1).map(makeQueueItem);
+      updateQueueBadge();
+      playTrack(librarySongs.indexOf(order[0]));
+      showToast(`${shuffle ? 'Shuffling' : 'Playing'} ${order.length} song${order.length === 1 ? '' : 's'} from your search`, 'info');
+      return;
+    }
+    setShuffle(shuffle);
+    if (shuffle) {
+      generateShuffleQueue();
+      shufflePointer = 0;
+      playTrack(shuffleQueue[0]);
+    } else {
+      playTrack(0);
+    }
+  }
+
+  const btnLibraryPlay = document.getElementById('btn-library-play');
+  const btnLibraryShuffle = document.getElementById('btn-library-shuffle');
+  if (btnLibraryPlay) btnLibraryPlay.addEventListener('click', () => playLibrary(false));
+  if (btnLibraryShuffle) btnLibraryShuffle.addEventListener('click', () => playLibrary(true));
+
+  // ==================== PLAYLIST BUILDER ("New Playlist") ====================
+  const pbSearch = document.getElementById('pb-search');
+  const pbSearchClear = document.getElementById('pb-search-clear');
+  const pbResults = document.getElementById('pb-results');
+  const pbSelectedList = document.getElementById('pb-selected');
+  const pbCount = document.getElementById('pb-count');
+  const PB_ICON_ADD = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`;
+  const PB_ICON_ADDED = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.6"><polyline points="20 6 9 17 4 12"/></svg>`;
+  let pbSelected = [];
+  let pbLocal = [];
+  let pbOnline = null;     // null: not searched online (yet)
+  let pbTimer = null;
+  let pbSeq = 0;
+
+  const pbKey = (t) => (t.filename ? 'f:' + t.filename : `q:${normalizeSongString(t.title)}|${normalizeSongString(t.artist)}`);
+  const pbIsSelected = (t) => pbSelected.some(x => pbKey(x) === pbKey(t));
+  const pbCover = (t) => t.cover_url || (t.filename ? resolveApiUrl(`/api/songs/artwork/${encodeURIComponent(t.filename)}`) : 'placeholder.svg');
+
+  function pbRow(track, { isOnline = false, number = null, removable = false } = {}) {
+    const row = document.createElement('div');
+    row.className = 'pb-row';
+    const added = pbIsSelected(track);
+    row.innerHTML = `
+      ${number !== null ? `<span class="pb-num">${number}</span>` : ''}
+      <img class="pb-thumb" src="${escapeHtml(pbCover(track))}" onerror="this.src='placeholder.svg'" alt="" />
+      <div class="pb-info">
+        <div class="pb-row-title truncate">${escapeHtml(track.title)}</div>
+        <div class="pb-row-artist truncate">${escapeHtml(track.artist)}${isOnline ? ' · <span class="pb-web">Web</span>' : ''}</div>
+      </div>
+      ${removable
+        ? '<button type="button" class="pb-btn pb-remove" title="Remove">&times;</button>'
+        : `<button type="button" class="pb-btn ${added ? 'is-added' : ''}" title="${added ? 'Remove' : 'Add'}">${added ? PB_ICON_ADDED : PB_ICON_ADD}</button>`}`;
+    row.querySelector('.pb-btn').addEventListener('click', () => {
+      const item = isOnline ? { ...track, is_online: true } : track;
+      if (pbIsSelected(item)) pbSelected = pbSelected.filter(x => pbKey(x) !== pbKey(item));
+      else pbSelected.push(item);
+      renderPlaylistBuilder();
+    });
+    return row;
+  }
+
+  function pbSection(container, label, tracks, opts, emptyText) {
+    const head = document.createElement('div');
+    head.className = 'pb-section-head';
+    head.textContent = label;
+    container.appendChild(head);
+    if (!tracks || !tracks.length) {
+      const empty = document.createElement('div');
+      empty.className = 'pb-empty';
+      empty.textContent = emptyText;
+      container.appendChild(empty);
+      return;
+    }
+    tracks.forEach(t => container.appendChild(pbRow(t, opts)));
+  }
+
+  function renderPlaylistBuilder() {
+    if (!pbResults || !pbSelectedList) return;
+    const q = (pbSearch.value || '').trim();
+    pbResults.innerHTML = '';
+    if (!q) {
+      pbSection(pbResults, 'RECENTLY ADDED TO YOUR LIBRARY', pbLocal, {}, 'Your library is empty. Search the web above.');
+    } else {
+      pbSection(pbResults, 'IN YOUR LIBRARY', pbLocal, {}, 'No matches in your library');
+      pbSection(pbResults, 'FROM THE WEB', pbOnline || [], { isOnline: true },
+        pbOnline === null ? (isDeviceOffline ? 'Offline: web search unavailable' : 'Searching...') : 'No web results');
+    }
+
+    pbSelectedList.innerHTML = '';
+    const head = document.createElement('div');
+    head.className = 'pb-section-head';
+    head.textContent = 'IN THIS PLAYLIST';
+    pbSelectedList.appendChild(head);
+    if (!pbSelected.length) {
+      const empty = document.createElement('div');
+      empty.className = 'pb-empty pb-empty-selected';
+      empty.textContent = 'Songs you add appear here. You can also add songs later.';
+      pbSelectedList.appendChild(empty);
+    } else {
+      pbSelected.forEach((t, i) => pbSelectedList.appendChild(pbRow(t, { number: i + 1, removable: true, isOnline: !!t.is_online })));
+    }
+    if (pbCount) pbCount.textContent = pbSelected.length ? `${pbSelected.length} song${pbSelected.length === 1 ? '' : 's'} selected` : 'None selected';
+  }
+
+  function runPlaylistBuilderSearch() {
+    const raw = (pbSearch.value || '').trim();
+    const q = raw.toLowerCase();
+    pbSearchClear.style.display = raw ? 'block' : 'none';
+    clearTimeout(pbTimer);
+    const seq = ++pbSeq;
+    if (!q) {
+      pbLocal = [...rawLibrarySongs].sort((a, b) => (b.mtime || 0) - (a.mtime || 0)).slice(0, 12);
+      pbOnline = null;
+      renderPlaylistBuilder();
+      return;
+    }
+    pbLocal = rawLibrarySongs.filter(s =>
+      (s.title || '').toLowerCase().includes(q) ||
+      (s.artist || '').toLowerCase().includes(q) ||
+      (s.album || '').toLowerCase().includes(q)
+    ).slice(0, 8);
+    pbOnline = null;
+    renderPlaylistBuilder();
+    if (isDeviceOffline) return;
+    pbTimer = setTimeout(async () => {
+      try {
+        const data = await (await fetch(`/api/explore/search?type=tracks&q=${encodeURIComponent(raw)}`)).json();
+        if (seq !== pbSeq) return;
+        pbOnline = (data.tracks || []).filter(t => !findLocalLibraryMatch(t)).slice(0, 8);
+      } catch (e) {
+        if (seq !== pbSeq) return;
+        pbOnline = [];
+      }
+      renderPlaylistBuilder();
+    }, 350);
+  }
+
+  function resetPlaylistBuilder() {
+    pbSelected = [];
+    if (pbSearch) pbSearch.value = '';
+    if (pbSearchClear) runPlaylistBuilderSearch();
+  }
+
+  if (pbSearch) {
+    pbSearch.addEventListener('input', runPlaylistBuilderSearch);
+    // Enter in the search box must not submit the playlist form
+    pbSearch.addEventListener('keydown', (e) => { if (e.key === 'Enter') e.preventDefault(); });
+    pbSearchClear.addEventListener('click', () => {
+      pbSearch.value = '';
+      runPlaylistBuilderSearch();
+      pbSearch.focus();
+    });
+  }
+
+  async function addSongsToPlaylist(playlistId, songs) {
+    let added = 0;
+    for (const t of songs) { // one at a time: the server rewrites the playlists file on every add
+      try {
+        const res = await fetch(`/api/playlists/${encodeURIComponent(playlistId)}/tracks`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: t.title,
+            artist: t.artist || 'Unknown Artist',
+            album: t.album || '',
+            cover_url: t.cover_url || (t.filename ? `/api/songs/artwork/${encodeURIComponent(t.filename)}` : ''),
+            duration: t.duration || 0,
+            query: t.query || `${t.artist || ''} - ${t.title}`
+          })
+        });
+        if (res.ok) added++;
+      } catch (e) {}
+    }
+    return added;
   }
 
   // ==================== STATE PERSISTENCE LOGIC ====================

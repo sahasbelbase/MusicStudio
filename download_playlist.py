@@ -867,12 +867,8 @@ def download_single_track(
             if attempt < max_retries:
                 time.sleep(1.5 * attempt)
             else:
-                for f in os.listdir(output_folder):
-                    if f.startswith(".temp_"):
-                        try:
-                            os.remove(os.path.join(output_folder, f))
-                        except:
-                            pass
+                # Only this song's temp files: other songs of the same playlist are downloading in parallel
+                remove_temp_files()
                 return False, str(e), target_filename
 
     return False, "Max retries exceeded", target_filename

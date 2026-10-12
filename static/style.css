@@ -5794,3 +5794,184 @@ body.fs-open .modal-root { z-index: 2000; }
   border-color: rgba(16, 185, 129, 0.45);
 }
 .queue-online-tag { color: var(--accent-emerald, #10b981); }
+
+/* Confirm dialog used for non-destructive choices (e.g. downloading a playlist) */
+.confirm-modal-icon.is-neutral {
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--accent-emerald, #10b981);
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+/* ==========================================================================
+   LIBRARY: Play / Shuffle
+   ========================================================================== */
+.lib-play-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.lib-play-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--emerald, #10b981);
+  color: #03150d;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(16, 185, 129, 0.35);
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+.lib-play-btn svg { margin-left: 2px; }
+.lib-play-btn:hover {
+  transform: scale(1.06);
+  box-shadow: 0 8px 24px rgba(16, 185, 129, 0.45);
+}
+.lib-play-btn:active { transform: scale(0.97); }
+.lib-shuffle-btn { height: 40px; padding: 0 16px; }
+
+/* ==========================================================================
+   NEW PLAYLIST: song picker
+   ========================================================================== */
+.create-playlist-window {
+  max-width: 860px;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+.playlist-builder {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+.pb-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+.pb-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.pb-count {
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
+}
+.pb-search-wrap {
+  max-width: none;
+  padding: 9px 16px;
+}
+.pb-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  height: 280px;
+}
+.pb-results,
+.pb-selected {
+  overflow-y: auto;
+  padding: 8px;
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.pb-selected {
+  background: rgba(16, 185, 129, 0.05);
+  border-color: rgba(16, 185, 129, 0.18);
+}
+.pb-section-head {
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: var(--text-tertiary);
+  padding: 6px 6px 4px;
+}
+.pb-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px;
+  border-radius: 10px;
+  transition: background 0.15s ease;
+}
+.pb-row:hover { background: rgba(255, 255, 255, 0.05); }
+.pb-num {
+  min-width: 18px;
+  text-align: center;
+  font-size: 0.72rem;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+.pb-thumb {
+  width: 36px;
+  height: 36px;
+  border-radius: 7px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.05);
+}
+.pb-info { flex: 1; min-width: 0; }
+.pb-row-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.pb-row-artist {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  margin-top: 1px;
+}
+.pb-web { color: var(--accent-emerald, #10b981); }
+.pb-btn {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 1.05rem;
+  line-height: 1;
+  transition: var(--transition);
+}
+.pb-btn:hover {
+  color: var(--accent-emerald, #10b981);
+  border-color: rgba(16, 185, 129, 0.45);
+  background: rgba(16, 185, 129, 0.1);
+}
+.pb-btn.is-added {
+  color: #03150d;
+  background: var(--emerald, #10b981);
+  border-color: var(--emerald, #10b981);
+}
+.pb-remove:hover {
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.1);
+}
+.pb-empty {
+  padding: 18px 10px;
+  text-align: center;
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
+  line-height: 1.5;
+}
+.pb-empty-selected {
+  margin: 8px;
+  border: 1px dashed rgba(16, 185, 129, 0.25);
+  border-radius: 10px;
+}
+@media (max-width: 760px) {
+  .pb-columns { grid-template-columns: 1fr; height: auto; }
+  .pb-results, .pb-selected { max-height: 240px; }
+}

@@ -7,7 +7,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="mobile-web-app-capable" content="yes" />
-    <title>Music Studio | Premium 320kbps Downloader</title>
+    <title>Music Studio</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -159,8 +159,8 @@
           <div class="explore-section">
             <div class="explore-section-header">
               <div>
-                <h3>Curated Charts & Playlists</h3>
-                <p>Click any playlist cover to view all songs, stream full tracks, and download full playlist or single tracks</p>
+                <h3>Charts & Playlists</h3>
+                <p>Open a playlist to play it, or download all of it or single songs</p>
               </div>
             </div>
             <div class="featured-playlists-grid" id="featured-playlists-grid">
@@ -172,8 +172,8 @@
           <div class="explore-section">
             <div class="explore-section-header">
               <div>
-                <h3>🔥 Trending Right Now</h3>
-                <p>Live global chart leaders — stream full tracks and 1-click downloads directly to your library</p>
+                <h3>Trending This Week</h3>
+                <p>Top chart songs you don't have yet</p>
               </div>
             </div>
             <div class="trending-tracks-grid" id="trending-tracks-grid">
@@ -277,10 +277,10 @@
           <div class="feed-wrapper">
             <div class="feed-header">
               <div class="feed-title-col">
-                <h3>Live Activity</h3>
+                <h3>Activity</h3>
                 <span class="live-beacon"></span>
               </div>
-              <span class="feed-hint" id="feed-hint">Real-time track progress</span>
+              <span class="feed-hint" id="feed-hint">Download progress</span>
             </div>
 
             <div class="feed-list" id="stream-feed">
@@ -292,7 +292,7 @@
                     <line x1="12" y1="2" x2="12" y2="4" />
                   </svg>
                 </div>
-                <p>Waiting for download trigger</p>
+                <p>No downloads yet</p>
               </div>
             </div>
           </div>
@@ -301,8 +301,17 @@
         <!-- ==================== TAB 2: LIBRARY ==================== -->
         <section id="tab-library" class="tab-view">
           <div class="library-toolbar glass">
-            <!-- Row 1: search + view tools -->
+            <!-- Row 1: play controls, search, view tools -->
             <div class="lib-bar-row lib-bar-top">
+              <div class="lib-play-group">
+                <button class="lib-play-btn" id="btn-library-play" title="Play">
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"/></svg>
+                </button>
+                <button class="lib-action-btn lib-shuffle-btn" id="btn-library-shuffle" title="Shuffle play">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
+                  <span>Shuffle</span>
+                </button>
+              </div>
               <div class="library-search-wrap">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
                   <circle cx="11" cy="11" r="8" />
@@ -441,13 +450,13 @@
                 <div class="settings-icon">⚡</div>
                 <div>
                   <h4>Audio Quality</h4>
-                  <p>Target MP3 encoding bitrate</p>
+                  <p>MP3 bitrate for downloads</p>
                 </div>
               </div>
               <select id="setting-quality" class="custom-select">
-                <option value="320k" selected>320 kbps MP3 (Master Quality)</option>
+                <option value="320k" selected>320 kbps MP3 (Best)</option>
                 <option value="256k">256 kbps MP3 (Balanced)</option>
-                <option value="192k">192 kbps MP3 (Compact)</option>
+                <option value="192k">192 kbps MP3 (Smaller files)</option>
               </select>
             </div>
 
@@ -455,15 +464,15 @@
               <div class="settings-card-head">
                 <div class="settings-icon">🧵</div>
                 <div>
-                  <h4>Concurrent Streams</h4>
-                  <p>Simultaneous worker downloads</p>
+                  <h4>Parallel Downloads</h4>
+                  <p>Songs downloaded at the same time</p>
                 </div>
               </div>
               <select id="setting-threads" class="custom-select">
-                <option value="2">2 Streams (Ultra-Gentle)</option>
-                <option value="3" selected>3 Streams (Recommended)</option>
-                <option value="4">4 Streams (Fast)</option>
-                <option value="6">6 Streams (Maximum)</option>
+                <option value="2">2 at a time (Gentle)</option>
+                <option value="3" selected>3 at a time (Recommended)</option>
+                <option value="4">4 at a time (Fast)</option>
+                <option value="6">6 at a time (Fastest)</option>
               </select>
             </div>
 
@@ -472,7 +481,7 @@
                 <div class="settings-icon">🔽</div>
                 <div>
                   <h4>Download Order</h4>
-                  <p>Priority sequence for playlist tracks</p>
+                  <p>Which songs of a playlist download first</p>
                 </div>
               </div>
               <select id="setting-sort" class="custom-select">
@@ -486,7 +495,7 @@
                 <div class="settings-icon">🏷️</div>
                 <div>
                   <h4>File Naming</h4>
-                  <p>Format on local hard disk</p>
+                  <p>How downloaded files are named</p>
                 </div>
               </div>
               <select id="setting-naming" class="custom-select">
@@ -526,12 +535,12 @@
               <div class="settings-card-head">
                 <div class="settings-icon">⚡</div>
                 <div>
-                  <h4>Offline Mode Simulation</h4>
-                  <p>Force offline behavior to test local library lock</p>
+                  <h4>Offline Mode</h4>
+                  <p>Use only songs saved on this device</p>
                 </div>
               </div>
               <div style="margin-top: 10px; display: flex; align-items: center; justify-content: space-between;">
-                <span style="font-size: 0.85rem; color: var(--text-secondary);">Force Offline (Library Only)</span>
+                <span style="font-size: 0.85rem; color: var(--text-secondary);">Library only</span>
                 <input type="checkbox" id="setting-force-offline" style="width: 20px; height: 20px; accent-color: var(--accent-emerald); cursor: pointer;" />
               </div>
             </div>
@@ -546,11 +555,11 @@
         <div class="dock-track-info" id="dock-track-info">
           <div class="dock-cover-wrap" id="dock-cover-wrap" title="Expand Fullscreen Player (Click Cover)">
             <img id="player-cover" src="placeholder.svg" alt="Now Playing" class="dock-cover" />
-            <span class="dock-stream-badge" id="dock-stream-badge" style="display: none;" title="Streaming Online">LIVE</span>
+            <span class="dock-stream-badge" id="dock-stream-badge" style="display: none;" title="Streaming online">ONLINE</span>
           </div>
           <div class="dock-text">
             <div class="dock-title truncate" id="player-title">Select a track to play</div>
-            <div class="dock-artist truncate" id="player-artist">Music Studio Engine</div>
+            <div class="dock-artist truncate" id="player-artist">Music Studio</div>
           </div>
           <button class="dock-quick-dl-btn" id="dock-quick-dl-btn" style="display: none;" title="Save to Library (320 kbps MP3)">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2">
@@ -607,7 +616,7 @@
               </svg>
               <span class="repeat-badge" id="repeat-badge">1</span>
             </button>
-            <button class="ctrl-btn transition-toggle-btn" id="player-transition-btn" title="Smart Transition: OFF — Click to enable (T)" aria-label="Toggle Smart Transition">
+            <button class="ctrl-btn transition-toggle-btn" id="player-transition-btn" title="Smart Transition (T)" aria-label="Toggle Smart Transition">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M12 3L13.8 9.2L20 11L13.8 12.8L12 19L10.2 12.8L4 11L10.2 9.2Z"/>
                 <path d="M19 2l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z" stroke-width="1.5"/>
@@ -774,7 +783,7 @@
             <img id="queue-np-cover" src="placeholder.svg" class="queue-item-thumb" />
             <div class="queue-item-info">
               <div class="queue-item-title truncate" id="queue-np-title">No track selected</div>
-              <div class="queue-item-artist truncate" id="queue-np-artist">Music Studio Engine</div>
+              <div class="queue-item-artist truncate" id="queue-np-artist">Music Studio</div>
             </div>
             <div class="queue-live-eq" id="queue-np-eq">
               <span></span><span></span><span></span>
@@ -812,20 +821,20 @@
         <div class="modal-hero">
           <img id="modal-cover" src="placeholder.svg" alt="Playlist Art" class="modal-hero-cover" />
           <div class="modal-hero-info">
-            <span class="modal-badge" id="modal-badge">Curated Collection</span>
+            <span class="modal-badge" id="modal-badge">Playlist</span>
             <h2 id="modal-title" class="modal-title">Today's Top Hits</h2>
             <p id="modal-subtitle" class="modal-subtitle">The hottest songs right now worldwide</p>
             <div class="modal-stats-row">
               <span class="modal-stat-pill" id="modal-track-count">50 tracks</span>
-              <span class="modal-stat-pill">320 kbps Master Quality</span>
-              <span class="modal-stat-pill">Full ID3 Studio Tags</span>
+              <span class="modal-stat-pill">320 kbps MP3</span>
+              <span class="modal-stat-pill">Artwork & tags</span>
             </div>
             <div class="modal-cta-row">
-              <button class="btn-play-all-stream" id="btn-modal-play-all" title="Stream All Songs Live">
+              <button class="btn-play-all-stream" id="btn-modal-play-all" title="Play all">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
                 <span>Play / Stream All</span>
               </button>
-              <button class="btn-shuffle-stream" id="btn-modal-shuffle" title="Shuffle Play Live">
+              <button class="btn-shuffle-stream" id="btn-modal-shuffle" title="Shuffle">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2">
                   <polyline points="16 3 21 3 21 8"></polyline>
                   <line x1="4" y1="20" x2="21" y2="3"></line>
@@ -883,7 +892,7 @@
         <button class="modal-close-icon" id="create-playlist-close" title="Close">&times;</button>
         <div class="create-playlist-header">
           <h3 id="create-playlist-heading">Create New Playlist</h3>
-          <p>Organize tracks into your personalized collection with custom artwork & title.</p>
+          <p>Name it, add a cover, and pick songs from your library or the web.</p>
         </div>
         <form id="create-playlist-form" class="create-playlist-form">
           <div class="playlist-form-grid">
@@ -917,6 +926,26 @@
               </div>
             </div>
           </div>
+          <!-- Pick songs right away: from the library or from the web -->
+          <div class="playlist-builder">
+            <div class="pb-head">
+              <span class="pb-title">Add songs</span>
+              <span class="pb-count" id="pb-count">None selected</span>
+            </div>
+            <div class="library-search-wrap pb-search-wrap">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8" />
+                <line x1="21" y1="21" x2="16.65" y2="16.65" />
+              </svg>
+              <input type="text" id="pb-search" placeholder="Search your library or the web..." autocomplete="off" spellcheck="false" />
+              <button type="button" class="clear-search-btn" id="pb-search-clear" style="display: none;" title="Clear">&times;</button>
+            </div>
+            <div class="pb-columns">
+              <div class="pb-results" id="pb-results"></div>
+              <div class="pb-selected" id="pb-selected"></div>
+            </div>
+          </div>
+
           <div class="playlist-form-actions">
             <button type="button" class="btn-secondary" id="btn-cancel-playlist">Cancel</button>
             <button type="submit" class="btn-primary" id="btn-submit-playlist">Create Playlist</button>
@@ -1092,9 +1121,9 @@
         <div class="fs-metadata">
           <h1 id="fs-title" class="fs-track-title truncate">Select a song to play</h1>
           <h2 id="fs-artist" class="fs-track-artist truncate">Music Studio</h2>
-          <span id="fs-album" class="fs-track-album truncate">Local Master</span>
+          <span id="fs-album" class="fs-track-album truncate"></span>
           <div class="fs-stream-actions" id="fs-stream-actions" style="display: none;">
-            <button class="fs-save-btn" id="fs-save-btn" title="Download 320 kbps Master MP3 to Library">
+            <button class="fs-save-btn" id="fs-save-btn" title="Download to your library (320 kbps MP3)">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
                 <polyline points="7 10 12 15 17 10" />
@@ -1156,7 +1185,7 @@
             <span class="fs-repeat-badge" id="fs-repeat-badge">1</span>
           </button>
 
-          <button class="fs-ctrl-btn fs-transition-btn transition-toggle-btn" id="fs-transition-btn" title="Smart Transition: OFF — Click to enable (T)" aria-label="Toggle Smart Transition">
+          <button class="fs-ctrl-btn fs-transition-btn transition-toggle-btn" id="fs-transition-btn" title="Smart Transition (T)" aria-label="Toggle Smart Transition">
             <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M12 3L13.8 9.2L20 11L13.8 12.8L12 19L10.2 12.8L4 11L10.2 9.2Z"/>
               <path d="M19 2l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z" stroke-width="1.5"/>

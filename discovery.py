@@ -45,7 +45,7 @@ def get_featured_playlists() -> List[Dict]:
         {
             "id": "most-played-weekly",
             "title": "Most Played This Week",
-            "subtitle": "Global viral chart leaders & most streamed hits",
+            "subtitle": "The most played songs worldwide this week",
             "badge": "Most Played This Week",
             "type": "weekly",
             "deezer_id": "4403076402",
