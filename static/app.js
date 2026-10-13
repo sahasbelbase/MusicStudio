@@ -119,6 +119,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let crossfadeOutgoingDeck = null;
   let crossfadeIncomingDeck = null;
   let hasTriggeredAutoCrossfade = false;
+  let seekLandedAt = null; // where the user last jumped to in this song; a jump past the transition point means "play from here"
   let isManualTransitionRequested = false;
 
   // Unified event dispatcher for the active deck
@@ -171,6 +172,10 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     deck.addEventListener('error', (e) => {
       if (e.target === activeDeck) dispatchAudioEvent('error', e);
+    });
+    // Every way of seeking (scrubbers, arrow keys, wheel, media keys) ends up here
+    deck.addEventListener('seeking', (e) => {
+      if (e.target === activeDeck && !isCrossfading) seekLandedAt = e.target.currentTime;
     });
   });
 
@@ -1318,6 +1323,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (djAudioFx) djAudioFx.resetFilters();
     resetCrossfadeState();
     hasTriggeredAutoCrossfade = false;
+    seekLandedAt = null;
     [playerTransitionBtn, fsTransitionBtn].forEach(btn => {
       if (btn) {
         btn.title = transitionMode
@@ -3249,6 +3255,7 @@ document.addEventListener('DOMContentLoaded', () => {
     hasPrefetchedNextTrack = false;
     analysisPass = 0;
     hasTriggeredAutoCrossfade = false;
+    seekLandedAt = null;
 
     if (queue && queue.length) {
       // Keep our own copy so reordering "next up" never mutates the explore/search lists
@@ -4575,6 +4582,7 @@ document.addEventListener('DOMContentLoaded', () => {
     hasPrefetchedNextTrack = false;
     analysisPass = 0;
     hasTriggeredAutoCrossfade = false;
+    seekLandedAt = null;
     playHistory.push(idx);
     if (playHistory.length > 100) playHistory.shift();
 
@@ -5148,7 +5156,9 @@ document.addEventListener('DOMContentLoaded', () => {
           const startAt = Math.max(soundEnd * 0.7, plan.startAt !== null ? plan.startAt : soundEnd - plan.startBeforeEnd);
           // timeupdate only fires every ~250 ms, so look ahead and schedule the exact start on the audio clock
           const lead = startAt - activeDeck.currentTime;
-          if (lead <= 1.0 && (effectiveDur - activeDeck.currentTime) > 0.2 && activeDeck.currentTime > 3) {
+          // Only when playback reaches the transition point: if the user jumped past it, keep playing from there
+          const jumpedPastStart = seekLandedAt !== null && seekLandedAt >= startAt - 1.0;
+          if (lead <= 1.0 && !jumpedPastStart && (effectiveDur - activeDeck.currentTime) > 0.2 && activeDeck.currentTime > 3) {
             pendingTransition = { track: nextTrackObj, plan, delaySec: Math.max(0, lead) };
             hasTriggeredAutoCrossfade = true;
             isAutoCrossfadeInProgress = true;
@@ -6314,9 +6324,55 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnAppUpdateDownload = document.getElementById('btn-app-update-download');
 
   function openAppUpdateDownload(info) {
+    if (info.can_install) {
+      confirmAppUpdateInstall(info);
+      return;
+    }
     fetch(resolveApiUrl('/api/app-update/open'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: info.url })
     }).catch(() => window.open(info.url, '_blank'));
+  }
+
+  // In-place update: the app downloads the release, closes, swaps itself for the new version and reopens
+  function confirmAppUpdateInstall(info) {
+    showConfirmDialog({
+      title: `Update to v${info.latest}?`,
+      message: 'Music Studio will download the update, close, install it and reopen by itself. Downloads in progress will stop.'
+        + (navigator.userAgent.includes('Windows') ? ' Windows will ask for permission to install.' : ''),
+      confirmText: 'Update Now',
+      isDanger: false,
+      onConfirm: () => installAppUpdate(info)
+    });
+  }
+
+  function setAppUpdateProgress(text) {
+    if (appUpdateStatus) appUpdateStatus.textContent = text;
+    const bar = document.getElementById('app-update-bar');
+    const barLabel = bar && bar.querySelector('span');
+    if (barLabel) barLabel.textContent = text;
+    document.querySelectorAll('#btn-app-update-download, #app-update-bar button').forEach(b => { b.disabled = true; });
+  }
+
+  async function installAppUpdate(info) {
+    saveCurrentPlaybackState(true);
+    setAppUpdateProgress('Downloading update...');
+    try {
+      const res = await fetch(resolveApiUrl('/api/app-update/install'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: info.url })
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `HTTP ${res.status}`);
+      for (;;) {
+        await new Promise(r => setTimeout(r, 700));
+        const st = await (await fetch(resolveApiUrl('/api/app-update/install'))).json();
+        if (st.state === 'downloading') setAppUpdateProgress(`Downloading update... ${st.progress}%`);
+        else if (st.state === 'installing') { setAppUpdateProgress('Installing update. Music Studio will reopen in a moment...'); return; }
+        else if (st.state === 'error') throw new Error(st.error || 'Update failed');
+      }
+    } catch (e) {
+      showToast(`Update failed: ${e.message}`, 'warning');
+      document.querySelectorAll('#btn-app-update-download, #app-update-bar button').forEach(b => { b.disabled = false; });
+      renderAppUpdateCard(info);
+    }
   }
 
   function renderAppUpdateCard(info) {
@@ -6325,7 +6381,7 @@ document.addEventListener('DOMContentLoaded', () => {
     appUpdateStatus.classList.toggle('has-update', !!info.update_available);
     if (info.update_available) {
       appUpdateStatus.textContent = `Version ${info.latest} is available.`;
-      btnAppUpdateDownload.textContent = `Download v${info.latest}`;
+      btnAppUpdateDownload.textContent = info.can_install ? `Update to v${info.latest}` : `Download v${info.latest}`;
       btnAppUpdateDownload.style.display = 'inline-flex';
       btnAppUpdateDownload.onclick = () => openAppUpdateDownload(info);
     } else {
@@ -6349,7 +6405,7 @@ document.addEventListener('DOMContentLoaded', () => {
       document.body.appendChild(bar);
     }
     bar.innerHTML = `<span>🎉 Music Studio <b>v${escapeHtml(info.latest)}</b> is available <span class="app-update-cur">(you have v${escapeHtml(info.current)})</span></span>
-      <button class="app-update-go">Download</button><button class="app-update-x" title="Dismiss">&times;</button>`;
+      <button class="app-update-go">${info.can_install ? 'Update Now' : 'Download'}</button><button class="app-update-x" title="Dismiss">&times;</button>`;
     bar.querySelector('.app-update-go').onclick = () => openAppUpdateDownload(info);
     bar.querySelector('.app-update-x').onclick = () => {
       localStorage.setItem('musicstudio_dismissed_update', info.latest);
@@ -6708,8 +6764,6 @@ document.addEventListener('DOMContentLoaded', () => {
           cover_url: t.cover_url || '', query: t.query || ''
         })),
         online_queue_index: currentOnlineQueueIndex,
-        time: (audioEngine.currentTime && isFinite(audioEngine.currentTime)) ? audioEngine.currentTime : 0,
-        was_playing: !audioEngine.paused,
         is_shuffle: isShuffle,
         repeat_mode: repeatMode
       };
@@ -6725,8 +6779,6 @@ document.addEventListener('DOMContentLoaded', () => {
         album: s.album,
         duration: s.duration || (audioEngine.duration && isFinite(audioEngine.duration) ? audioEngine.duration : 0),
         cover_url: s.cover_url || '',
-        time: (audioEngine.currentTime && isFinite(audioEngine.currentTime)) ? audioEngine.currentTime : 0,
-        was_playing: !audioEngine.paused,
         is_shuffle: isShuffle,
         repeat_mode: repeatMode
       };
@@ -6778,20 +6830,16 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!data || !data.title) return;
 
       const dur = data.duration || 0;
-      const pos = data.time || 0;
       const cover = data.cover_url || (data.filename ? resolveApiUrl(`/api/songs/artwork/${encodeURIComponent(data.filename)}`) : 'placeholder.svg');
 
+      // The last song comes back loaded at 0:00 and paused: nothing plays until the user presses Play or Shuffle
       playerTitle.textContent = data.title;
       playerArtist.textContent = data.artist || 'Music Studio';
       playerCover.src = cover;
       playerTotalTime.textContent = dur ? formatSeconds(dur) : '--:--';
-      playerCurrentTime.textContent = formatSeconds(pos);
-
-      if (dur > 0) {
-        const pct = Math.max(0, Math.min((pos / dur) * 100, 100));
-        playerScrubber.value = pct;
-        updateScrubberFill(pct);
-      }
+      playerCurrentTime.textContent = formatSeconds(0);
+      playerScrubber.value = 0;
+      updateScrubberFill(0);
 
       // Sync Fullscreen Overlay
       if (fsCover) fsCover.src = cover;
@@ -6799,11 +6847,10 @@ document.addEventListener('DOMContentLoaded', () => {
       if (fsArtist) fsArtist.textContent = data.artist || 'Music Studio';
       if (fsAlbum) fsAlbum.textContent = data.album || '';
       if (fsTotalTime) fsTotalTime.textContent = dur ? formatSeconds(dur) : '--:--';
-      if (fsCurrentTime) fsCurrentTime.textContent = formatSeconds(pos);
-      if (fsScrubber && dur > 0) {
-        const pct = Math.max(0, Math.min((pos / dur) * 100, 100));
-        fsScrubber.value = pct;
-        updateFsScrubberFill(pct);
+      if (fsCurrentTime) fsCurrentTime.textContent = formatSeconds(0);
+      if (fsScrubber) {
+        fsScrubber.value = 0;
+        updateFsScrubberFill(0);
       }
 
       // Sync MediaSession & MacNotch HUD
@@ -6857,20 +6904,6 @@ document.addEventListener('DOMContentLoaded', () => {
         activeDeck._track = currentTrackObject() || data;
       }
 
-      // Reliably seek to exact position once audio metadata is available
-      if (pos > 0) {
-        const applySeek = () => {
-          try {
-            audioEngine.currentTime = pos;
-          } catch (e) {}
-          audioEngine.removeEventListener('loadedmetadata', applySeek);
-        };
-        audioEngine.addEventListener('loadedmetadata', applySeek);
-        try {
-          audioEngine.currentTime = pos;
-        } catch (e) {}
-      }
-
       // Restore shuffle queue and UI
       if (isShuffle) {
         if (currentSongIndex >= 0) {
@@ -6884,21 +6917,8 @@ document.addEventListener('DOMContentLoaded', () => {
         updateRepeatUI();
       }
 
-      // If song was actively playing when closed, auto-resume playback!
-      if (data.was_playing) {
-        isPlaying = true;
-        updatePlayIcon(true);
-        const playPromise = audioEngine.play();
-        if (playPromise !== undefined) {
-          playPromise.catch(() => {
-            isPlaying = false;
-            updatePlayIcon(false);
-          });
-        }
-      } else {
-        isPlaying = false;
-        updatePlayIcon(false);
-      }
+      isPlaying = false;
+      updatePlayIcon(false);
     } catch (e) {
       console.warn('Error restoring playback state:', e);
     }

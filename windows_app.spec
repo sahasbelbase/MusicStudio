@@ -1,22 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
 import sys
-import shutil
 
 block_cipher = None
 BASE_DIR = os.path.abspath(SPECPATH)
 
-# Windows FFmpeg check
+# FFmpeg comes from imageio-ffmpeg: a real static build that its PyInstaller hook collects and
+# find_ffmpeg() locates at runtime. Don't bundle shutil.which("ffmpeg"): on the CI runner that is
+# Chocolatey's shim, a tiny launcher pointing at the build machine's install that fails on every other PC.
 binaries = []
-ffmpeg_win = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
-if not ffmpeg_win:
-    try:
-        import imageio_ffmpeg
-        ffmpeg_win = imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception:
-        pass
-if ffmpeg_win and os.path.exists(ffmpeg_win):
-    binaries.append((ffmpeg_win, '.'))
 
 datas = [
     (os.path.join(BASE_DIR, 'static'), 'static'),

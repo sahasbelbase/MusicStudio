@@ -1,9 +1,10 @@
 """
 discovery.py - In-App Music Discovery, Trending Charts, and Live Search
-Provides free, keyless music exploration via Deezer & Spotify Embed extractors.
+Provides free, keyless music exploration via Deezer, with iTunes & Spotify Embed fallbacks.
 """
 
 import os
+import re
 import json
 import time
 import urllib.request
@@ -34,10 +35,56 @@ def _fetch_json(url: str, timeout: int = 10) -> Optional[Dict]:
     try:
         req = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
         with safe_urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode('utf-8'))
+            data = json.loads(resp.read().decode('utf-8'))
+        if isinstance(data, dict) and data.get("error"):
+            # Deezer reports failures (e.g. its per-IP request quota) as HTTP 200 with an error body
+            print(f"[Discovery] {url} returned an error: {data['error']}")
+        return data
     except Exception as e:
         print(f"[Discovery] Error fetching {url}: {e}")
         return None
+
+def _itunes_songs(source: Dict, limit: int) -> List[Dict]:
+    """
+    Songs from iTunes, the fallback when Deezer returns nothing (some networks can't reach Deezer or hit
+    its per-IP quota). source is {"chart": genre_id} for Apple's top-songs chart (0 = all genres)
+    or {"term": "..."} for a song search. Alternate versions of the same song are dropped.
+    """
+    if "term" in source:
+        data = _fetch_json(f"https://itunes.apple.com/search?term={urllib.parse.quote(source['term'])}&entity=song&limit={limit}")
+        results = (data or {}).get("results", [])
+    else:
+        genre = f"/genre={source['chart']}" if source.get("chart") else ""
+        feed = (_fetch_json(f"https://itunes.apple.com/us/rss/topsongs/limit={limit}{genre}/json") or {}).get("feed") or {}
+        entries = feed.get("entry") or []
+        if isinstance(entries, dict):  # the feed returns a bare object when it has a single entry
+            entries = [entries]
+        ids = [e["id"]["attributes"]["im:id"] for e in entries]
+        # The chart has no durations; one lookup returns full details for every song, kept in chart order
+        lookup = _fetch_json(f"https://itunes.apple.com/lookup?id={','.join(ids)}") if ids else None
+        by_id = {str(r.get("trackId")): r for r in (lookup or {}).get("results", [])}
+        results = [by_id[i] for i in ids if i in by_id]
+
+    tracks, seen = [], set()
+    for t in results:
+        title, artist = t.get("trackName"), t.get("artistName") or "Unknown Artist"
+        if t.get("wrapperType") != "track" or not title:
+            continue
+        key = (artist.lower(), re.sub(r"\s*[\(\[].*?[\)\]]", "", title).lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        tracks.append({
+            "id": f"it_{t.get('trackId')}",
+            "title": title,
+            "artist": artist,
+            "album": t.get("collectionName", ""),
+            "duration": (t.get("trackTimeMillis") or 0) // 1000,
+            "cover_url": (t.get("artworkUrl100") or "").replace("100x100bb", "600x600bb"),
+            "preview_url": t.get("previewUrl", ""),
+            "query": f"{artist} - {title} Official Audio"
+        })
+    return tracks
 
 def get_featured_playlists() -> List[Dict]:
     """Returns curated featured playlists for the Discover view."""
@@ -49,6 +96,7 @@ def get_featured_playlists() -> List[Dict]:
             "badge": "Most Played This Week",
             "type": "weekly",
             "deezer_id": "4403076402",
+            "itunes": {"chart": 0},
             "cover_url": "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=600&auto=format&fit=crop&q=80",
             "spotify_url": "https://open.spotify.com/playlist/37i9dQZEVXbMDoHDwVN2tF"
         },
@@ -59,6 +107,7 @@ def get_featured_playlists() -> List[Dict]:
             "badge": "Top 100 Worldwide",
             "type": "chart",
             "deezer_id": "3155776842",
+            "itunes": {"chart": 0},
             "cover_url": "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600&auto=format&fit=crop&q=80",
             "spotify_url": "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M"
         },
@@ -69,6 +118,7 @@ def get_featured_playlists() -> List[Dict]:
             "badge": "100 Classics",
             "type": "legendary",
             "deezer_id": "11242423484",
+            "itunes": {"chart": 21},
             "cover_url": "https://images.unsplash.com/photo-1498038432885-c6f3f1b912ee?w=600&auto=format&fit=crop&q=80",
             "spotify_url": "https://open.spotify.com/playlist/37i9dQZF1DWXRqgorJj26U"
         },
@@ -79,6 +129,7 @@ def get_featured_playlists() -> List[Dict]:
             "badge": "Hip-Hop & Rap",
             "type": "genre",
             "deezer_id": "1976915302",
+            "itunes": {"term": "hip hop classics"},
             "cover_url": "https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=600&auto=format&fit=crop&q=80"
         },
         {
@@ -88,6 +139,7 @@ def get_featured_playlists() -> List[Dict]:
             "badge": "Dance Festival",
             "type": "genre",
             "deezer_id": "12134756071",
+            "itunes": {"chart": 17},
             "cover_url": "https://images.unsplash.com/photo-1516450360452-9312f5e86fc7?w=600&auto=format&fit=crop&q=80"
         },
         {
@@ -97,6 +149,7 @@ def get_featured_playlists() -> List[Dict]:
             "badge": "Lo-Fi & Chill",
             "type": "mood",
             "deezer_id": "1290316405",
+            "itunes": {"term": "chill acoustic"},
             "cover_url": "https://images.unsplash.com/photo-1518609878373-06d740f60d8b?w=600&auto=format&fit=crop&q=80"
         },
         {
@@ -106,6 +159,7 @@ def get_featured_playlists() -> List[Dict]:
             "badge": "2000s Hits",
             "type": "era",
             "deezer_id": "4897737548",
+            "itunes": {"term": "2000s hits"},
             "cover_url": "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=600&auto=format&fit=crop&q=80",
             "spotify_url": "https://open.spotify.com/playlist/37i9dQZF1DX4o1oenSJRJd"
         },
@@ -116,6 +170,7 @@ def get_featured_playlists() -> List[Dict]:
             "badge": "80s Hits",
             "type": "era",
             "deezer_id": "1913763402",
+            "itunes": {"term": "80s hits"},
             "cover_url": "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?w=600&auto=format&fit=crop&q=80",
             "spotify_url": "https://open.spotify.com/playlist/37i9dQZF1DX4UtSsGT1Sbe"
         }
@@ -145,7 +200,10 @@ def get_trending_tracks(limit: int = 60) -> List[Dict]:
                 "query": f"{t.get('artist', {}).get('name', '')} - {t.get('title', '')} Official Audio"
             })
 
-    # Fallback to Spotify extractor if Deezer didn't return tracks
+    # Fallback to Apple's top-songs chart, then the Spotify extractor, if Deezer didn't return tracks
+    if not tracks:
+        tracks = [{"rank": rank, **t} for rank, t in enumerate(_itunes_songs({"chart": 0}, limit), 1)]
+
     if not tracks:
         try:
             _, sp_tracks = SpotifyExtractor.extract_tracks("https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M")
@@ -225,7 +283,11 @@ def get_playlist_details(playlist_id: str) -> Optional[Dict]:
                     "query": f"{track_artist} - {track_title} Official Audio"
                 })
 
-    # 2. Secondary fallback: Spotify Extractor if Deezer returned no tracks
+    # 2. Fallback: iTunes chart or search matching this playlist's theme
+    if not tracks and playlist_meta and playlist_meta.get("itunes"):
+        tracks = [{"track_number": idx, **t} for idx, t in enumerate(_itunes_songs(playlist_meta["itunes"], 100), 1)]
+
+    # 3. Last resort: Spotify Extractor if Deezer and iTunes returned no tracks
     if not tracks and playlist_meta and playlist_meta.get("spotify_url"):
         try:
             sp_title, sp_tracks = SpotifyExtractor.extract_tracks(playlist_meta["spotify_url"])
@@ -288,6 +350,9 @@ def search_tracks(query: str, limit: int = 25) -> List[Dict]:
                 "preview_url": t.get("preview", ""),
                 "query": f"{t.get('artist', {}).get('name', '')} - {t.get('title', '')} Official Audio"
             })
+
+    if not results:
+        results = _itunes_songs({"term": q_clean}, limit)
 
     _set_cache(cache_key, results)
     return results

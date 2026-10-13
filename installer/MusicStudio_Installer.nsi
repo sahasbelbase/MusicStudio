@@ -201,9 +201,10 @@ Function .onInit
     ; Check for existing installation
     ReadRegStr $0 HKLM "${REG_KEY}" "UninstallString"
     ${If} $0 != ""
+        ; In-app updates run this installer with /S: answer No and install over the existing copy
         MessageBox MB_YESNO|MB_ICONQUESTION \
             "Music Studio is already installed.$\r$\n$\r$\nWould you like to uninstall the previous version first?$\r$\nThis is recommended before installing a new version." \
-            IDNO skip_uninstall
+            /SD IDNO IDNO skip_uninstall
             ExecWait '$0 /S'
             Sleep 2000
         skip_uninstall:

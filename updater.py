@@ -15,7 +15,9 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -184,10 +186,11 @@ def _qjs_path() -> str:
 
 def ensure_js_runtime() -> bool:
     """
-    Make sure yt-dlp has a JavaScript runtime. Uses deno/node/bun when installed, otherwise downloads
-    a checksum-verified QuickJS (~1-2 MB). Without one, YouTube often answers 403 or hides formats.
+    Make sure yt-dlp has a JavaScript runtime by downloading a checksum-verified QuickJS (~1-2 MB).
+    Fetched even when deno/node/bun are installed: yt-dlp rejects old ones (Node older than 22, common
+    on Windows PCs). Without a runtime, YouTube often answers 403, a bot check, or hides formats.
     """
-    if any(shutil.which(rt) for rt in ("deno", "node", "bun")) or os.path.isfile(_qjs_path()):
+    if os.path.isfile(_qjs_path()):
         return True
     os_key = "linux" if sys.platform.startswith("linux") else sys.platform
     asset = QJS_ASSETS.get((os_key, platform.machine().lower()))
@@ -211,9 +214,9 @@ def ensure_js_runtime() -> bool:
 
 
 def js_runtimes() -> dict:
-    """JS runtimes for yt-dlp's YouTube challenge solving (installed ones first, else our QuickJS)."""
+    """JS runtimes for yt-dlp's YouTube challenge solving: installed ones plus our QuickJS (yt-dlp skips unsupported ones)."""
     found = {rt: {} for rt in ("deno", "node", "bun") if shutil.which(rt)}
-    if not found and os.path.isfile(_qjs_path()):
+    if os.path.isfile(_qjs_path()):
         found["quickjs"] = {"path": _qjs_path()}
     return found
 
@@ -244,7 +247,7 @@ def heal(exc: Exception, package: str = "yt-dlp") -> bool:
     try:
         if package == "spotapi":
             return update_spotapi()
-        runtime_added = not js_runtimes() and ensure_js_runtime()
+        runtime_added = not os.path.isfile(_qjs_path()) and ensure_js_runtime()
         return bool(update().get("ok")) or runtime_added
     except Exception:
         return False
@@ -269,7 +272,8 @@ def check_app_update() -> dict:
     Reads the public redirect github.com/<repo>/releases/latest -> .../releases/tag/vX.Y.Z instead of
     the REST API, whose anonymous limit (60 requests/hour per network) is easy to hit.
     """
-    out = {"current": APP_VERSION, "latest": None, "update_available": False, "url": None, "error": None}
+    out = {"current": APP_VERSION, "latest": None, "update_available": False, "url": None, "error": None,
+           "can_install": False}
     try:
         with safe_urlopen(f"https://github.com/{APP_REPO}/releases/latest", timeout=15) as r:
             final_url = r.geturl()
@@ -294,4 +298,120 @@ def check_app_update() -> dict:
         direct = f"https://github.com/{APP_REPO}/releases/download/{tag}/{asset}" if asset else None
         if direct and _url_exists(direct):
             out["url"] = direct
+            out["can_install"] = _installed_app_path() is not None
     return out
+
+
+# ---- In-place app update: download the new release, quit, let a helper swap it in and reopen ----
+
+_app_update = {"state": "idle", "progress": 0, "error": None}
+_app_update_lock = threading.Lock()
+UPDATE_LOG = os.path.expanduser("~/.musicstudio/app_update.log")
+
+
+def _installed_app_path():
+    """The installed app this process can replace (macOS .app bundle or Windows exe), or None."""
+    if not getattr(sys, "frozen", False):
+        return None  # running from source
+    if sys.platform == "darwin":
+        app = os.path.abspath(os.path.join(os.path.dirname(sys.executable), "..", ".."))
+        # Apps run from the DMG or a quarantined download live on a read-only translocated path
+        if not app.endswith(".app") or "/AppTranslocation/" in app or not os.access(os.path.dirname(app), os.W_OK):
+            return None
+        return app
+    if sys.platform == "win32":
+        return sys.executable
+    return None
+
+
+def app_update_status() -> dict:
+    return dict(_app_update)
+
+
+def start_app_update(url: str, quit_app) -> None:
+    """Download the release asset in the background; once it's ready, start the installer helper and call quit_app()."""
+    target = _installed_app_path()
+    if not target:
+        raise RuntimeError("This copy of Music Studio can't update itself")
+    with _app_update_lock:
+        if _app_update["state"] in ("downloading", "installing"):
+            return
+        _app_update.update(state="downloading", progress=0, error=None)
+    threading.Thread(target=_download_and_install, args=(url, target, quit_app), daemon=True).start()
+
+
+def _download_and_install(url: str, target: str, quit_app):
+    work = tempfile.mkdtemp(prefix="musicstudio_update_")
+    try:
+        package = os.path.join(work, url.rsplit("/", 1)[-1])
+        with safe_urlopen(url, timeout=60) as r, open(package, "wb") as f:
+            total, done = int(r.headers.get("Content-Length") or 0), 0
+            while chunk := r.read(256 * 1024):
+                f.write(chunk)
+                done += len(chunk)
+                if total:
+                    _app_update["progress"] = min(99, done * 100 // total)
+        if total and done != total:
+            raise RuntimeError("The download was incomplete")
+        _app_update.update(state="installing", progress=100)
+        os.makedirs(os.path.dirname(UPDATE_LOG), exist_ok=True)
+        if sys.platform == "darwin":
+            _launch_mac_helper(package, target, work)
+        else:
+            _launch_windows_helper(package, target, work)
+        quit_app()
+    except Exception as e:
+        shutil.rmtree(work, ignore_errors=True)
+        _app_update.update(state="error", error=str(e))
+
+
+def _launch_mac_helper(dmg: str, app: str, work: str):
+    q = shlex.quote
+    old = app + ".old"
+    script = os.path.join(work, "update.sh")
+    with open(script, "w") as f:
+        f.write(f"""#!/bin/sh
+# Wait for Music Studio to quit, replace the app with the one in the new disk image, reopen it.
+# Any failure puts the previous app back, so the user always ends up with a working Music Studio.
+exec >>{q(UPDATE_LOG)} 2>&1
+echo "== $(date) updating {q(app)}"
+while kill -0 {os.getpid()} 2>/dev/null; do sleep 0.5; done
+mnt=$(mktemp -d)
+if hdiutil attach -nobrowse -noautoopen -readonly -mountpoint "$mnt" {q(dmg)}; then
+  if [ -d "$mnt/Music Studio.app" ]; then
+    rm -rf {q(old)}
+    if mv {q(app)} {q(old)}; then
+      if ditto "$mnt/Music Studio.app" {q(app)}; then rm -rf {q(old)}; else rm -rf {q(app)}; mv {q(old)} {q(app)}; fi
+    fi
+  fi
+  hdiutil detach "$mnt" -quiet || hdiutil detach "$mnt" -force -quiet
+fi
+rmdir "$mnt" 2>/dev/null
+xattr -cr {q(app)}
+open {q(app)}
+rm -rf {q(work)}
+""")
+    subprocess.Popen(["/bin/sh", script], start_new_session=True,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _launch_windows_helper(setup: str, exe: str, work: str):
+    def q(s: str) -> str:  # PowerShell single-quoted string
+        return "'" + s.replace("'", "''") + "'"
+    name = os.path.splitext(os.path.basename(exe))[0]
+    script = os.path.join(work, "update.ps1")
+    with open(script, "w", encoding="utf-8-sig") as f:
+        f.write(f"""# Wait for Music Studio to quit, run the new installer silently (Windows asks for admin
+# permission), then reopen the app. If the user declines, the current version simply reopens.
+Start-Transcript -Append -Path {q(UPDATE_LOG)} | Out-Null
+Get-Process -Name {q(name)} -ErrorAction SilentlyContinue | Wait-Process -Timeout 60 -ErrorAction SilentlyContinue
+try {{ Start-Process -FilePath {q(setup)} -ArgumentList '/S' -Verb RunAs -Wait }} catch {{ Write-Output $_ }}
+$dir = (Get-ItemProperty 'HKCU:\\Software\\MusicStudio' -ErrorAction SilentlyContinue).InstallDir
+$app = if ($dir -and (Test-Path (Join-Path $dir 'MusicStudio.exe'))) {{ Join-Path $dir 'MusicStudio.exe' }} else {{ {q(exe)} }}
+Start-Process -FilePath $app
+Stop-Transcript | Out-Null
+Remove-Item -Recurse -Force {q(work)} -ErrorAction SilentlyContinue
+""")
+    subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", script],
+                     creationflags=0x08000000 | 0x00000200,  # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

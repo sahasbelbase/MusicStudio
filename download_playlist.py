@@ -18,6 +18,7 @@ import sys
 import time
 import json
 import shutil
+import uuid
 import urllib.request
 from ssl_helper import safe_urlopen
 import argparse
@@ -93,12 +94,13 @@ DEFAULT_THREADS = 3
 DEFAULT_BITRATE = "320k"
 DEFAULT_NAMING = "title"  # 'title' -> "{Title}.mp3", 'artist-title' -> "{Artist} - {Title}.mp3"
 
-# YouTube player client cascade: web_embedded bypasses bot checks that block the
-# default web client, while the remaining clients provide fallback coverage.
+# Keep yt-dlp's own default clients (they track YouTube changes with each yt-dlp update) and add
+# web_embedded, which still serves audio when YouTube answers the defaults with "Sign in to confirm
+# you're not a bot" (busy shared IPs like an office). web_embedded needs a JS runtime plus yt-dlp-ejs.
 # This key is YouTube-specific and harmlessly ignored by other extractors.
 _YT_EXTRACTOR_ARGS = {
     'youtube': {
-        'player_client': ['web_embedded', 'android', 'ios', 'mweb', 'web']
+        'player_client': ['default', 'web_embedded']
     }
 }
 
@@ -767,7 +769,8 @@ def download_single_track(
 
     target_filename = get_target_filename(track_info, naming_format)
     target_filepath = os.path.join(output_folder, target_filename)
-    temp_prefix = os.path.join(output_folder, f".temp_{track_info.get('id', int(time.time()*1000))}")
+    # Unique per download: playlist/album tracks often have no id, and parallel downloads must never share a file
+    temp_prefix = os.path.join(output_folder, f".temp_{uuid.uuid4().hex}")
 
     # 1. Check if alt_filepath ("Artist - Title.mp3") already exists and matches this artist
     if os.path.isfile(alt_filepath) and os.path.getsize(alt_filepath) > 200 * 1024:
@@ -846,19 +849,11 @@ def download_single_track(
                 ydl.download([query])
 
             temp_mp3 = f"{temp_prefix}.mp3"
-            if os.path.isfile(temp_mp3):
-                embed_id3_tags(temp_mp3, track_info, enriched_metadata)
-                shutil.move(temp_mp3, target_filepath)
-                return True, "downloaded", target_filename
-            else:
-                matched = [f for f in os.listdir(output_folder) if f.startswith(f".temp_{track_info.get('id', '')}")]
-                if matched:
-                    cand = os.path.join(output_folder, matched[0])
-                    embed_id3_tags(cand, track_info, enriched_metadata)
-                    shutil.move(cand, target_filepath)
-                    return True, "downloaded", target_filename
-                
+            if not os.path.isfile(temp_mp3):
                 raise RuntimeError(f"FFmpeg conversion failed to produce {temp_mp3}")
+            embed_id3_tags(temp_mp3, track_info, enriched_metadata)
+            shutil.move(temp_mp3, target_filepath)
+            return True, "downloaded", target_filename
                 
         except Exception as e:
             if stop_requested():

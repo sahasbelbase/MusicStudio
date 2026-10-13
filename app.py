@@ -58,7 +58,7 @@ def _silent_engine_update():
     """Keep yt-dlp current in the background; failures are ignored (the bundled copy still works)."""
     def run():
         try:
-            updater.ensure_js_runtime()  # fetch QuickJS if this machine has no deno/node/bun
+            updater.ensure_js_runtime()  # fetch QuickJS once; installed node/deno may be too old for yt-dlp
         except Exception:
             pass
         try:
@@ -763,6 +763,26 @@ def app_update_open(req: OpenUrlPayload):
         raise HTTPException(status_code=400, detail="Unsupported URL")
     webbrowser.open(req.url)
     return {"status": "opened"}
+
+@app.post("/api/app-update/install")
+def app_update_install(req: OpenUrlPayload):
+    """Download the new release, then quit so the updater helper can replace the app and reopen it."""
+    if not req.url.startswith(f"https://github.com/{updater.APP_REPO}/releases/download/"):
+        raise HTTPException(status_code=400, detail="Unsupported URL")
+
+    def quit_app():
+        # Give the UI a moment to show "Restarting" before the process exits
+        Thread(target=lambda: (time.sleep(1.5), os._exit(0)), daemon=True).start()
+
+    try:
+        updater.start_app_update(req.url, quit_app)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return updater.app_update_status()
+
+@app.get("/api/app-update/install")
+def app_update_install_status():
+    return updater.app_update_status()
 
 # ==================== DOWNLOAD QUEUE ====================
 # Jobs share one progress display, so they run one at a time. A download requested while another is
