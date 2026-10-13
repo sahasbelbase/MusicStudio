@@ -2804,8 +2804,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ==================== TRACK INSPECTOR DRAWER ====================
   function openDrawer(song, idx) {
-    selectedSong = song;
-    currentSongIndex = idx;
+    selectedSong = song;   // only the drawer's subject: the playing song stays whatever is playing
     const coverUrl = (song.cover_url && song.cover_url !== 'placeholder.svg') ? song.cover_url : (song.filename ? resolveApiUrl(`/api/songs/artwork/${encodeURIComponent(song.filename)}`) : 'placeholder.svg');
 
     drawerCover.src = coverUrl;
@@ -2999,9 +2998,10 @@ document.addEventListener('DOMContentLoaded', () => {
   if (drawerPlayBtn) {
     drawerPlayBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (currentSongIndex >= 0 && currentSongIndex < librarySongs.length) {
-        playTrack(currentSongIndex);
-      }
+      if (!selectedSong) return;
+      const idx = selectedSong.filename ? librarySongs.findIndex(s => s.filename === selectedSong.filename) : -1;
+      if (idx >= 0) playTrack(idx);
+      else playOnlineTrack(selectedSong);
     });
   }
 
@@ -6141,7 +6141,7 @@ document.addEventListener('DOMContentLoaded', () => {
       file_path: track.file_path || '',
       preview_url: track.preview_url || '',
       query: track.query || `${track.title} ${track.artist}`,
-      is_online: Boolean(track.is_online || isOnlineStreaming || track.preview_url),
+      is_online: Boolean(track.is_online || track.preview_url || (!track.filename && !track.file_path)),
       is_android_mediastore: Boolean(track.is_android_mediastore),
       is_local_device: Boolean(track.is_local_device),
       file_ref_id: track.file_ref_id || null
