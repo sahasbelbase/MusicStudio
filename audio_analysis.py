@@ -116,6 +116,35 @@ def _db(amplitude: float) -> float:
     return 20.0 * math.log10(amplitude / 32768.0 + 1e-9)
 
 
+QUIET_BELOW_BODY_DB = 35.0   # this far under a song's typical level its start or end is silence in practice
+
+
+def _quiet_edges(env: List[float]) -> Tuple[float, float]:
+    """
+    Seconds of near-silence at the start and end: where the song stays 35 dB or more under its own typical
+    level. ffmpeg's silencedetect needs every sample under -48 dBFS, so one click in a silent intro, or the
+    noise in a fade-out's inaudible tail, counts as music and the transition plays that silence. Here 0.3 s
+    averages are compared with the song's level instead: clicks don't count, while soft intros and outros
+    (far above this line) stay part of the song.
+    """
+    win = ENV_RATE * 3 // 10
+    size = ENV_RATE // 2
+    if len(env) < size * 20:
+        return 0.0, 0.0
+    levels = sorted(_db(sum(env[i:i + size]) / size) for i in range(0, len(env) - size + 1, size))
+    floor = levels[len(levels) // 2] - QUIET_BELOW_BODY_DB
+    prefix = [0.0]
+    for x in env:
+        prefix.append(prefix[-1] + x)
+    last_start = len(env) - win
+    audible = lambda i: _db((prefix[i + win] - prefix[i]) / win) > floor
+    first = next((i for i in range(last_start + 1) if audible(i)), None)
+    if first is None:
+        return 0.0, 0.0
+    last = next(i for i in range(last_start, -1, -1) if audible(i))
+    return first / ENV_RATE, (len(env) - (last + win)) / ENV_RATE
+
+
 def _energy_shape(env: List[float], lead: float, sound_end: float) -> Optional[Tuple[float, float, float]]:
     """
     Body level plus how long the outro fades and the intro builds, in seconds.
@@ -272,6 +301,11 @@ def analyze(path: str, ffmpeg_bin: Optional[str]) -> Optional[dict]:
                        first_beat=None, first_downbeat=None, intro_grid=0.0)
             if res["duration"] <= MAX_ENVELOPE_SECONDS:
                 env, onset, low_onset = _envelopes(ffmpeg_bin, path)
+                quiet_lead, quiet_trail = _quiet_edges(env)
+                lead, trail = max(res["lead"], quiet_lead), max(res["trail"], quiet_trail)
+                if lead + trail < res["duration"] * 0.6:
+                    res.update(lead=round(min(lead, 45.0), 2), trail=round(min(trail, 45.0), 2))
+                    sound_end = res["duration"] - res["trail"]
                 shape = _energy_shape(env, res["lead"], sound_end)
                 if shape:
                     _, outro_fade, intro_rise = shape

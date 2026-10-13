@@ -1000,9 +1000,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const fadeCurves = {
     equalOut: t => Math.cos(t * Math.PI / 2),
     equalIn: t => Math.sin(t * Math.PI / 2),
-    linearOut: t => 1 - t,
-    linearIn: t => t,
+    // A song that fades itself out keeps its own fade: only the last stretch is closed off. Fading it
+    // again on top makes both songs near-silent in the middle of the blend.
+    ownFadeOut: t => (t < 0.7 ? 1 : Math.cos(((t - 0.7) / 0.3) * Math.PI / 2)),
   };
+  // A song with a soft intro rises by itself: bring it to full level within 1.5 s and let the intro do the rest
+  const ownRiseIn = seconds => t => Math.sin(Math.min(1, (t * seconds) / 1.5) * Math.PI / 2);
 
   function isSameAlbum(a, b) {
     const album = (t) => ((t && t.album) || '').trim().toLowerCase();
@@ -1099,9 +1102,10 @@ document.addEventListener('DOMContentLoaded', () => {
       let overlap = Math.min(10, outroFade);
       let grid = onDownbeat(soundEnd - overlap, 12);
       const locked = canSync && grid ? syncAt(grid.startAt) : null;
-      if (!locked && !eitherBeatless) {
-        // Two grooves that are not beat-locked must not run together for long: enter late in the fade,
-        // overlapping only as long as they drift apart by less than ~60 ms
+      if (!locked && !eitherBeatless && !softIntro) {
+        // Two full-level grooves that are not beat-locked must not run together for long: enter late in the
+        // fade, overlapping only as long as they drift apart by less than ~60 ms. (A next song that rises
+        // by itself keeps the long overlap: its beat is still soft while the old song fades.)
         overlap = Math.min(4, outroFade);
         if (tempo && tempo.gap > 0) overlap = Math.max(2, Math.min(overlap, 0.06 / tempo.gap));
         grid = onDownbeat(soundEnd - overlap, overlap + 2 * beat);
@@ -1111,8 +1115,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const seconds = startAt !== null ? (soundEnd - startAt) / speed : overlap;
       return plan('natural_fade', locked ? 'Natural fade, beat-matched' : 'Natural fade', seconds, overlap, {
         startAt,
-        outCurve: fadeCurves.linearOut,
-        inCurve: softIntro ? fadeCurves.linearIn : fadeCurves.equalIn,
+        outCurve: fadeCurves.ownFadeOut,
+        inCurve: softIntro ? ownRiseIn(seconds) : fadeCurves.equalIn,
         bassSwapAt: eitherBeatless ? null : (locked ? Math.min(seconds - 0.3, (locked.pre + 8 * beat) / speed) : seconds / 2),
         sync: locked ? locked.sync : null,
       });
@@ -1124,7 +1128,10 @@ document.addEventListener('DOMContentLoaded', () => {
     if (eitherBeatless) {
       let seconds = softIntro ? Math.min(10, Math.max(6, b.intro_rise)) : (inBeat >= CLEAR_BEAT ? 3.5 : 6);
       if (intensityJump >= 6) seconds = Math.min(seconds, 4);
-      return plan('soft_crossfade', 'Soft crossfade', seconds, seconds, { lowpassOut: true });
+      return plan('soft_crossfade', 'Soft crossfade', seconds, seconds, {
+        lowpassOut: true,
+        inCurve: softIntro ? ownRiseIn(seconds) : fadeCurves.equalIn,
+      });
     }
 
     // 3. Both have a pulse but the tempos are too far apart to stretch: never run two grooves together.
