@@ -1714,11 +1714,14 @@ def resolve_stream_url(query: str) -> dict:
             if now - item.get("timestamp", 0) < 7200:
                 return item
 
+    from download_playlist import _YT_EXTRACTOR_ARGS
+
     ydl_opts = {
         'format': 'bestaudio/best',
         'quiet': True,
         'noplaylist': True,
         'no_warnings': True,
+        'extractor_args': _YT_EXTRACTOR_ARGS,
     }
     ffmpeg_loc = find_ffmpeg()
     if ffmpeg_loc:

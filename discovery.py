@@ -307,8 +307,10 @@ def search_youtube(query: str, limit: int = 10) -> List[Dict]:
     try:
         import yt_dlp
         import updater
+        from download_playlist import _YT_EXTRACTOR_ARGS
         opts = {"extract_flat": True, "skip_download": True, "quiet": True, "no_warnings": True,
-                "js_runtimes": updater.js_runtimes()}
+                "js_runtimes": updater.js_runtimes(),
+                "extractor_args": _YT_EXTRACTOR_ARGS}
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(f"ytsearch{limit}:{q_clean}", download=False)
     except Exception as e:

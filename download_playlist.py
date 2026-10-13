@@ -93,6 +93,15 @@ DEFAULT_THREADS = 3
 DEFAULT_BITRATE = "320k"
 DEFAULT_NAMING = "title"  # 'title' -> "{Title}.mp3", 'artist-title' -> "{Artist} - {Title}.mp3"
 
+# YouTube player client cascade: web_embedded bypasses bot checks that block the
+# default web client, while the remaining clients provide fallback coverage.
+# This key is YouTube-specific and harmlessly ignored by other extractors.
+_YT_EXTRACTOR_ARGS = {
+    'youtube': {
+        'player_client': ['web_embedded', 'android', 'ios', 'mweb', 'web']
+    }
+}
+
 # Console color codes
 class Colors:
     HEADER = '\033[95m'
@@ -505,6 +514,7 @@ class YouTubeExtractor:
             'quiet': True,
             'no_warnings': True,
             'js_runtimes': updater.js_runtimes(),
+            'extractor_args': _YT_EXTRACTOR_ARGS,
         }
         
         tracks = []
@@ -803,6 +813,7 @@ def download_single_track(
         'ignoreerrors': False,
         'noplaylist': True,
         'js_runtimes': updater.js_runtimes(),
+        'extractor_args': _YT_EXTRACTOR_ARGS,
     }
 
     if cookies_browser:
