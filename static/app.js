@@ -110,6 +110,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const rawDeckB = document.getElementById('audio-engine-secondary');
   let activeDeck = rawDeckA;
   let standbyDeck = rawDeckB;
+  [rawDeckA, rawDeckB].forEach(deck => {
+    if (!deck) return;
+    deck.preservesPitch = true;     // beat-matching changes speed, never pitch
+    deck.webkitPreservesPitch = true;
+  });
   let currentMasterVolume = parseFloat(localStorage.getItem('musicstudio_volume') || localStorage.getItem('spotistudio_volume')) || 0.8;
 
   // Crossfade state
@@ -177,7 +182,21 @@ document.addEventListener('DOMContentLoaded', () => {
     deck.addEventListener('seeking', (e) => {
       if (e.target === activeDeck && !isCrossfading) seekLandedAt = e.target.currentTime;
     });
+    // Spinner on Play while the song is waiting for audio (a stream that is still being fetched)
+    deck.addEventListener('waiting', (e) => {
+      if (e.target === activeDeck) setPlayBuffering(true);
+    });
+    ['playing', 'pause', 'error', 'ended', 'emptied'].forEach(ev => deck.addEventListener(ev, (e) => {
+      if (e.target === activeDeck) setPlayBuffering(false);
+    }));
   });
+
+  function setPlayBuffering(on) {
+    ['player-play', 'fs-play'].forEach(id => {
+      const btn = document.getElementById(id);
+      if (btn) btn.classList.toggle('is-buffering', on);
+    });
+  }
 
   // Virtual audioEngine Proxy: seamlessly intercepts all existing codebase references
   const audioEngine = new Proxy(rawDeckA, {
@@ -959,45 +978,23 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  const GENRE_FAMILIES = [
-    ['electronic', ['electronic', 'edm', 'dance', 'house', 'techno', 'trance', 'dubstep', 'drum', 'garage']],
-    ['hiphop', ['hip-hop', 'hip hop', 'rap', 'trap', 'drill', 'grime']],
-    ['rnb', ['r&b', 'rnb', 'soul', 'funk']],
-    ['rock', ['rock', 'metal', 'punk', 'grunge', 'indie', 'alternative']],
-    ['country', ['country', 'americana', 'bluegrass', 'folk']],
-    ['chill', ['ambient', 'lofi', 'lo-fi', 'chill', 'classical', 'soundtrack', 'piano', 'jazz', 'acoustic', 'new age']],
-    ['latin', ['latin', 'reggaeton', 'salsa', 'bachata', 'dancehall', 'afro']],
-    ['pop', ['pop', 'desi', 'hindi', 'bollywood']],
-  ];
-  // Families that blend acceptably; anything else is a "different world" and gets an echo-out
-  const GENRE_NEIGHBOURS = {
-    pop: ['electronic', 'hiphop', 'rnb', 'rock', 'latin', 'country'],
-    electronic: ['pop', 'hiphop', 'latin'],
-    hiphop: ['rnb', 'pop', 'electronic', 'latin'],
-    rnb: ['hiphop', 'pop', 'chill'],
-    rock: ['pop', 'country'],
-    country: ['rock', 'pop', 'chill'],
-    chill: ['rnb', 'country'],
-    latin: ['pop', 'hiphop', 'electronic'],
-  };
+  // Transitions are chosen from what the two songs sound like where they meet, never from genre tags
+  // (half of a typical library has none, and a country or rock song can be a drum-machine banger or an
+  // acoustic ballad). Grid quality = onset energy on the beat grid relative to the average: on real
+  // libraries, produced hip-hop, dance, pop and country measure 4.5-14; ballads, folk, live, acoustic and
+  // a cappella recordings 2.3-3.5.
+  const CLEAR_BEAT = 4.5;           // steady pulse: safe to beat-match
+  const NO_BEAT = 3.0;              // no reliable pulse: never use beat tricks
+  const SYNC_MAX_STRETCH = 0.08;    // time-stretching beyond 8% starts to colour vocals
+  const SYNC_MEET_MAX = 0.12;       // up to 12% apart both songs meet in the middle (~6% each)
 
-  function genreFamily(track) {
-    if (!track) return null;
-    const g = resolveSongGenreForTransition(track).toLowerCase();
-    const hit = GENRE_FAMILIES.find(([, words]) => words.some(w => g.includes(w)));
-    return hit ? hit[0] : null;
-  }
-
-  function genreDistance(a, b) {
-    if (!a || !b) return 1;          // unknown: let the audio measurements decide
-    if (a === b) return 0;
-    return (GENRE_NEIGHBOURS[a] || []).includes(b) ? 1 : 2;
-  }
-
-  // Tempo gap as a fraction, folding half/double time (70 and 140 BPM line up)
-  function tempoGap(a, b) {
+  // Tempo relation, folding half/double time (70 and 140 BPM line up). ratio is the playback speed that
+  // puts the incoming song on the outgoing song's tempo.
+  function tempoRelation(a, b) {
     if (!a || !b || !a.bpm || !b.bpm) return null;
-    return Math.min(...[0.5, 1, 2].map(k => Math.abs(b.bpm * k - a.bpm) / a.bpm));
+    const best = [0.5, 1, 2].map(k => ({ k, gap: Math.abs(b.bpm * k - a.bpm) / a.bpm }))
+      .reduce((x, y) => (y.gap < x.gap ? y : x));
+    return { gap: best.gap, ratio: a.bpm / (b.bpm * best.k) };
   }
 
   const fadeCurves = {
@@ -1031,7 +1028,8 @@ document.addEventListener('DOMContentLoaded', () => {
    * Returns { style, label, durationMs, startAt (outgoing-song time to begin, when its beat grid is known),
    * startBeforeEnd (fallback: seconds before the music ends), cue (seconds into the incoming file),
    * inStartSec (when the incoming song starts, relative to the transition start), outCurve/inCurve
-   * (0..1 progress -> gain), bassSwapAt (s), filterSweep, lowpassOut, echo, gapless }.
+   * (0..1 progress -> gain), bassSwapAt (s), filterSweep, lowpassOut, echo, gapless,
+   * sync ({ ratio, outDownbeat, inDownbeat, glideSeconds } for a beat-matched blend) }.
    */
   function planSmartTransition(outgoingTrack, incomingTrack, isManualSkip = false) {
     const a = getKnownAnalysis(outgoingTrack);
@@ -1048,7 +1046,7 @@ document.addEventListener('DOMContentLoaded', () => {
       cue, inStartSec: 0, startAt: null, bassSwapAt: null,
       outCurve: fadeCurves.equalOut,
       inCurve: fadeCurves.equalIn,
-      filterSweep: false, lowpassOut: false, echo: null, gapless: false,
+      filterSweep: false, lowpassOut: false, echo: null, gapless: false, sync: null,
     };
     const plan = (style, label, seconds, startBeforeEnd, extra = {}) =>
       ({ ...base, style, label, durationMs: Math.round(seconds * 1000), startBeforeEnd, ...extra });
@@ -1061,14 +1059,17 @@ document.addEventListener('DOMContentLoaded', () => {
       return plan('gapless', 'Gapless (same album)', 0.08, 0, { cue: 0, gapless: true });
     }
 
-    const famOut = genreFamily(outgoingTrack);
-    const famIn = genreFamily(incomingTrack);
-    const distance = genreDistance(famOut, famIn);
-    const gap = tempoGap(a, b);
-    const tempoClash = gap !== null && gap > 0.12;
-    const tempoMatch = gap !== null && gap <= 0.06;
+    // What the two songs sound like where they meet
+    const outBeat = a ? (a.outro_grid || 0) : 0;
+    const inBeat = b ? (b.intro_grid || 0) : 0;
+    const known = !!(a && b);
+    const bothClear = known && outBeat >= CLEAR_BEAT && inBeat >= CLEAR_BEAT;
+    const eitherBeatless = known && (outBeat < NO_BEAT || inBeat < NO_BEAT);
+    const tempo = tempoRelation(a, b);
     const outroFade = a ? a.outro_fade : 0;
     const softIntro = b ? b.intro_rise >= 2.5 : false;
+    // Mastering loudness gap: a wall-of-sound master next to a quiet acoustic one should not overlap for long
+    const intensityJump = known && a.lufs != null && b.lufs != null ? Math.abs(a.lufs - b.lufs) : 0;
 
     // A transition that starts on the last downbeat before `from` and runs to the end of the music
     const onDownbeat = (from, maxLen) => {
@@ -1076,23 +1077,60 @@ document.addEventListener('DOMContentLoaded', () => {
       return d !== null && soundEnd - d <= maxLen ? { startAt: d, seconds: soundEnd - d } : null;
     };
 
-    // 1. The song already fades itself out: let the next one rise under that fade
+    // Beat-matched: both songs have a steady pulse and tempos close enough to stretch inaudibly. The incoming
+    // song's first downbeat is pinned to an outgoing downbeat; whatever precedes it in the file (a pickup,
+    // a breath) plays just before, so the song is never cut.
+    // Up to 8% apart only the incoming song is stretched; up to 12% both meet in the middle, the outgoing
+    // song easing into the shared tempo over the first beats of the blend (as Apple Music's AutoMix does).
+    const outRate = !tempo ? null : tempo.gap <= SYNC_MAX_STRETCH ? 1 : tempo.gap <= SYNC_MEET_MAX ? Math.sqrt(1 / tempo.ratio) : null;
+    const canSync = bothClear && outRate !== null &&
+      b.first_downbeat !== null && b.first_downbeat !== undefined && b.first_downbeat >= cue && downbeats.length > 0;
+    const syncAt = (d) => {
+      const pre = (b.first_downbeat - cue) / tempo.ratio;
+      const glideSeconds = Math.min(20, Math.max(8, 32 * 60 / (b.bpm || 120)));
+      return {
+        startAt: d - pre, pre,
+        sync: { ratio: tempo.ratio, outRate, outDownbeat: d, inDownbeat: b.first_downbeat, glideSeconds },
+      };
+    };
+
+    // 1. The song fades itself out: let the next one rise under that fade (beat-locked when both have a pulse)
     if (outroFade >= 4) {
-      const overlap = Math.min(10, outroFade);
-      const grid = onDownbeat(soundEnd - overlap, 12);
-      const seconds = grid ? grid.seconds : overlap;
-      return plan('natural_fade', 'Natural fade', seconds, overlap, {
-        startAt: grid ? grid.startAt : null,
+      let overlap = Math.min(10, outroFade);
+      let grid = onDownbeat(soundEnd - overlap, 12);
+      const locked = canSync && grid ? syncAt(grid.startAt) : null;
+      if (!locked && !eitherBeatless) {
+        // Two grooves that are not beat-locked must not run together for long: enter late in the fade,
+        // overlapping only as long as they drift apart by less than ~60 ms
+        overlap = Math.min(4, outroFade);
+        if (tempo && tempo.gap > 0) overlap = Math.max(2, Math.min(overlap, 0.06 / tempo.gap));
+        grid = onDownbeat(soundEnd - overlap, overlap + 2 * beat);
+      }
+      const startAt = locked ? locked.startAt : (grid ? grid.startAt : null);
+      const speed = locked ? outRate : 1;   // the outgoing song may ease into a shared tempo
+      const seconds = startAt !== null ? (soundEnd - startAt) / speed : overlap;
+      return plan('natural_fade', locked ? 'Natural fade, beat-matched' : 'Natural fade', seconds, overlap, {
+        startAt,
         outCurve: fadeCurves.linearOut,
         inCurve: softIntro ? fadeCurves.linearIn : fadeCurves.equalIn,
-        bassSwapAt: distance < 2 && !tempoClash ? seconds / 2 : null,
+        bassSwapAt: eitherBeatless ? null : (locked ? Math.min(seconds - 0.3, (locked.pre + 8 * beat) / speed) : seconds / 2),
+        sync: locked ? locked.sync : null,
       });
     }
 
-    // 2. Different worlds or clashing tempos: never run two grooves together. Let the outgoing song
-    //    land its last downbeat, echo that final beat out in tempo, and drop the next song in on the
-    //    following beat.
-    if (distance === 2 || tempoClash) {
+    // 2. Either song has no steady beat (ballads, acoustic, live, classical, a cappella): no beat tricks,
+    //    just a soft equal-power crossfade shaped by how the next song begins, dulling the outgoing highs.
+    //    A beat-driven song that starts at full level after a beatless one comes in quickly instead.
+    if (eitherBeatless) {
+      let seconds = softIntro ? Math.min(10, Math.max(6, b.intro_rise)) : (inBeat >= CLEAR_BEAT ? 3.5 : 6);
+      if (intensityJump >= 6) seconds = Math.min(seconds, 4);
+      return plan('soft_crossfade', 'Soft crossfade', seconds, seconds, { lowpassOut: true });
+    }
+
+    // 3. Both have a pulse but the tempos are too far apart to stretch: never run two grooves together.
+    //    Let the outgoing song land its last downbeat, echo that final beat out in tempo, and drop the next
+    //    song in on the following beat.
+    if (known && tempo && tempo.gap > SYNC_MEET_MAX) {
       const B = Math.min(0.75, Math.max(0.3, beat));
       const hit = soundEnd !== null
         ? (lastAtOrBefore(downbeats, soundEnd - 0.12) ?? lastAtOrBefore(a.outro_beats, soundEnd - 0.12))
@@ -1117,29 +1155,37 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     }
 
-    // 3. Ambient, classical, jazz, lo-fi: a slow, soft dissolve that dulls the outgoing highs
-    if (famOut === 'chill' || famIn === 'chill') {
-      return plan('ambient_morph', 'Ambient morph', 10, 10, { lowpassOut: true });
+    // 4. Beat-matched blend over 16 beats with the bass swapped on the bar in the middle. Two very steady
+    //    grids (club-style kicks) get a DJ filter sweep on top.
+    if (canSync) {
+      const blendLen = Math.min(12, Math.max(6, beat * 16));
+      const grid = onDownbeat(soundEnd - blendLen, blendLen + 4 * beat);
+      if (grid) {
+        const locked = syncAt(grid.startAt);
+        const seconds = (soundEnd - locked.startAt) / outRate;
+        const club = outBeat >= 6.5 && inBeat >= 6.5;
+        return plan(club ? 'filter_sweep' : 'beat_blend', club ? 'DJ filter sweep, beat-matched' : 'Beat-matched blend',
+          seconds, seconds, {
+            startAt: locked.startAt,
+            bassSwapAt: Math.min(seconds - 0.3, (locked.pre + 8 * beat) / outRate),
+            filterSweep: club,
+            sync: locked.sync,
+          });
+      }
     }
 
-    // Blend over 16 beats when tempos line up (8 s at 120 BPM), 8 beats otherwise so two slightly
-    // different tempos are not heard drifting; start on a downbeat and swap the bass on a bar line
-    const blendBeats = tempoMatch ? 16 : 8;
-    const blendLen = a && a.bpm ? Math.min(10, Math.max(4, beat * blendBeats)) : (tempoMatch ? 8 : 5);
+    // 5. Everything else (pulses that cannot be beat-locked): a short blend on a downbeat with a bass swap
+    //    so two basslines never stack. Unlocked beats drift apart by the tempo gap every second, so the
+    //    overlap is kept to what drifts less than ~60 ms (two kicks closer than that still sound as one).
+    let blendLen = a && a.bpm ? Math.min(6, Math.max(4, beat * 8)) : 5;
+    if (tempo && tempo.gap > 0) blendLen = Math.max(2.5, Math.min(blendLen, 0.06 / tempo.gap));
+    if (intensityJump >= 6) blendLen = Math.min(blendLen, 4);
     const grid = onDownbeat(soundEnd !== null ? soundEnd - blendLen : 0, blendLen + 4 * beat);
     const seconds = grid ? grid.seconds : blendLen;
-    const extra = {
+    return plan('smooth_blend', 'Smooth blend', seconds, seconds, {
       startAt: grid ? grid.startAt : null,
-      bassSwapAt: grid ? Math.min(seconds - 0.3, (blendBeats / 2) * beat) : seconds / 2,
-    };
-
-    // 4. Club music: filter sweep plus bass swap
-    if (famOut === 'electronic' && famIn === 'electronic') {
-      return plan('filter_sweep', 'DJ filter sweep', seconds, seconds, { ...extra, filterSweep: true });
-    }
-
-    // 5. Everything else that fits together: equal-power blend with a bass swap
-    return plan('bass_swap_blend', tempoMatch ? 'Beat blend' : 'Smooth blend', seconds, seconds, extra);
+      bassSwapAt: grid ? Math.min(seconds - 0.3, 4 * beat) : seconds / 2,
+    });
   }
 
   // Same song, even when one copy came from the queue and the other from the library list
@@ -1253,6 +1299,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (crossfadeTimer) clearTimeout(crossfadeTimer);
     crossfadeAnimId = null;
     crossfadeTimer = null;
+    stopBeatSync();
     if (crossfadeOutgoingDeck) stopDeck(crossfadeOutgoingDeck);
     if (activeDeck) {
       try {
@@ -1262,6 +1309,66 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (djAudioFx) djAudioFx.resetFilters();
     resetCrossfadeState();
+  }
+
+  // ==================== BEAT SYNC ====================
+  // During a beat-matched blend the incoming song is time-stretched (pitch preserved) onto the outgoing
+  // song's tempo and held on its beat grid by a small phase-locked loop: both decks' positions are compared
+  // every 40 ms and the incoming speed is nudged (at most 3%) to cancel any drift. Afterwards the song eases
+  // back to its own tempo over a few bars, too gradually to hear.
+  let beatSyncTimer = null;
+
+  function stopBeatSync() {
+    if (beatSyncTimer) clearInterval(beatSyncTimer);
+    beatSyncTimer = null;
+  }
+
+  function startBeatSync(outgoingDeck, incomingDeck, sync) {
+    stopBeatSync();
+    let playingSince = null;
+    let jumps = 0;
+    let seeking = false;
+    const rampFrom = outgoingDeck.playbackRate || 1;
+    const rampStart = performance.now();
+    beatSyncTimer = setInterval(() => {
+      if (!isCrossfading || crossfadeIncomingDeck !== incomingDeck) return stopBeatSync();
+      if (sync.outRate !== 1 && !outgoingDeck.paused) {
+        const t = Math.min(1, (performance.now() - rampStart) / 2000);
+        outgoingDeck.playbackRate = rampFrom + (sync.outRate - rampFrom) * t;
+      }
+      if (seeking || incomingDeck.paused || outgoingDeck.paused || incomingDeck.readyState < 3) return;
+      if (playingSince === null) playingSince = performance.now();
+      const outRate = outgoingDeck.playbackRate || 1;
+      // Where the incoming file should be for its beats to sit on the outgoing grid
+      const target = sync.inDownbeat + (outgoingDeck.currentTime - sync.outDownbeat) * sync.ratio;
+      const error = (incomingDeck.currentTime - target) / (sync.ratio * outRate); // real seconds, + = incoming ahead
+      // While the incoming song is still nearly silent (or after a stall) jump straight onto the grid
+      if (jumps < 3 && (Math.abs(error) > 0.03 && performance.now() - playingSince < 1200 || Math.abs(error) > 0.25)) {
+        jumps++;
+        seeking = true;
+        incomingDeck.addEventListener('seeked', () => { seeking = false; }, { once: true });
+        incomingDeck.currentTime = Math.max(0, target + 0.02 * sync.ratio * outRate); // the seek itself takes a moment
+        return;
+      }
+      const nudge = Math.abs(error) < 0.004 ? 0 : Math.max(-0.03, Math.min(0.03, -error / 0.5));
+      incomingDeck.playbackRate = sync.ratio * outRate * (1 + nudge);
+    }, 40);
+  }
+
+  function glideToNativeTempo(deck, seconds) {
+    stopBeatSync();
+    const from = deck.playbackRate || 1;
+    if (Math.abs(from - 1) < 0.002) {
+      deck.playbackRate = 1;
+      return;
+    }
+    const start = performance.now();
+    beatSyncTimer = setInterval(() => {
+      if (deck !== activeDeck || isCrossfading) return stopBeatSync();
+      const t = Math.min(1, (performance.now() - start) / (seconds * 1000));
+      deck.playbackRate = from + (1 - from) * t;
+      if (t >= 1) stopBeatSync();
+    }, 200);
   }
 
   let activeTransitionPlan = null;
@@ -1315,13 +1422,19 @@ document.addEventListener('DOMContentLoaded', () => {
     if (crossfadeTimer) clearTimeout(crossfadeTimer);
     crossfadeAnimId = null;
     crossfadeTimer = null;
+    const sync = activeTransitionPlan && activeTransitionPlan.sync;
     stopDeck(outgoingDeck);
     try {
       incomingDeck.volume = deckLevel(incomingDeck);
-      incomingDeck.playbackRate = 1.0;
     } catch (e) {}
     if (djAudioFx) djAudioFx.resetFilters();
     resetCrossfadeState();
+    // A beat-matched song eases back to its own tempo; anything else is already at normal speed
+    if (sync) glideToNativeTempo(incomingDeck, sync.glideSeconds);
+    else {
+      stopBeatSync();
+      try { incomingDeck.playbackRate = 1.0; } catch (e) {}
+    }
     hasTriggeredAutoCrossfade = false;
     seekLandedAt = null;
     [playerTransitionBtn, fsTransitionBtn].forEach(btn => {
@@ -1375,6 +1488,12 @@ document.addEventListener('DOMContentLoaded', () => {
       standbyDeck = outgoingDeck;
 
       startCrossfadeAnimation(outgoingDeck, incomingDeck, plan, delaySec);
+      if (plan.sync) {
+        incomingDeck.playbackRate = plan.sync.ratio * (outgoingDeck.playbackRate || 1);
+        startBeatSync(outgoingDeck, incomingDeck, plan.sync);
+      } else {
+        stopBeatSync();
+      }
       setTimeout(() => {
         if (activeDeck !== incomingDeck) return; // superseded by another change
         const p = incomingDeck.play();
@@ -3157,9 +3276,31 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // ==================== INSTANT STREAMING ====================
+  // Finding a song's audio on YouTube takes a few seconds, so it is done ahead of time: when the pointer
+  // rests on a song, for the top search results, and for whatever plays next. Play then starts at once.
+  const warmedStreams = new Map(); // query -> when it was warmed (the server keeps resolved links ~2 h)
+  function warmStream(track, urgent = false) {
+    if (!track || isDeviceOffline || track.filename || findLocalLibraryMatch(track)) return;
+    const q = track.query || `${track.title} ${track.artist}`;
+    if (!q || Date.now() - (warmedStreams.get(q) || 0) < 90 * 60 * 1000) return;
+    warmedStreams.set(q, Date.now());
+    fetch(resolveApiUrl(`/api/stream/warm?q=${encodeURIComponent(q)}${urgent ? '&urgent=true' : ''}`))
+      .then(r => r.json())
+      .then(j => { if (j.status === 'busy') warmedStreams.delete(q); })
+      .catch(() => warmedStreams.delete(q));
+  }
+
+  function warmOnHover(el, track) {
+    let timer = null;
+    el.addEventListener('pointerenter', () => { timer = setTimeout(() => warmStream(track, true), 150); });
+    el.addEventListener('pointerleave', () => clearTimeout(timer));
+  }
+
   function createExploreTrackCard(track, queue = [], idx = -1) {
     const card = document.createElement('div');
     card.className = 'explore-song-card';
+    warmOnHover(card, track);
 
     const durationText = (track.duration && track.duration > 0) ? formatSeconds(track.duration) : '3:30';
     const coverUrl = track.cover_url || 'placeholder.svg';
@@ -3279,6 +3420,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Always stream the full track (no 30s previews)
     transitionToAudio(streamEndpoint, track, { streamMode: 'full' });
+    const upNext = peekNextTrack();
+    if (upNext) warmStream(upNext.track || upNext.song);
 
     // Update Dock
     playerCover.src = coverUrl;
@@ -3574,6 +3717,7 @@ document.addEventListener('DOMContentLoaded', () => {
       };
 
       renderSearchResults(q);
+      currentSearchResults.tracks.slice(0, 3).forEach(warmStream); // most plays are one of the first results
     } catch (e) {
       exploreSearchTitle.textContent = 'Search Notice';
       exploreSearchCount.textContent = e.message;
@@ -3995,6 +4139,8 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>
       `;
 
+      warmOnHover(row, track);
+
       // Preview audio listener
       const prevBtn = row.querySelector('.btn-row-preview');
       if (prevBtn) {
@@ -4058,6 +4204,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // Clicking row streams track live immediately
       row.title = `Play "${track.title}"`;
+      warmOnHover(row, track);
       row.addEventListener('click', (e) => {
         if (e.target.closest('button')) return;
         playOnlineTrack(track, tracks, idx);

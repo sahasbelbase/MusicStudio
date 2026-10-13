@@ -1580,12 +1580,32 @@ os.makedirs(STREAM_CACHE_DIR, exist_ok=True)
 ACTIVE_PREFETCHES: set = set()
 ACTIVE_PREFETCHES_LOCK = Lock()
 
+# Partial downloads left by an app that quit mid-song
+for _f in os.listdir(STREAM_CACHE_DIR):
+    if _f.endswith(".tmp"):
+        try:
+            os.remove(os.path.join(STREAM_CACHE_DIR, _f))
+        except OSError:
+            pass
+
 def get_stream_cache_path(query: str):
+    """Cache file for a song, plus a temp name unique to this writer (playback and prefetch may overlap)."""
     clean = re.sub(r"[\/\\:\*\?" + chr(34) + "<>\|]", "", query).strip().lower()
     h = hashlib.sha256(clean.encode("utf-8")).hexdigest()[:24]
     cache_file = os.path.join(STREAM_CACHE_DIR, f"{h}.m4a")
-    tmp_file = os.path.join(STREAM_CACHE_DIR, f"{h}.tmp")
+    tmp_file = os.path.join(STREAM_CACHE_DIR, f"{h}.{uuid.uuid4().hex[:8]}.tmp")
     return cache_file, tmp_file
+
+def cached_audio_type(path: str) -> str:
+    """Real container of a cached stream (YouTube's best audio is usually WebM despite the .m4a name)."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(12)
+    except OSError:
+        return "audio/mp4"
+    if head.startswith(b"\x1aE\xdf\xa3"):
+        return "audio/webm"
+    return "audio/mp4" if head[4:8] == b"ftyp" else "audio/mpeg"
 
 def clean_stream_cache(max_size_mb: int = 800):
     """LRU cache cleaner to keep disk space capped."""
@@ -1698,13 +1718,8 @@ def download_track_to_cache_worker(query: str):
         ACTIVE_PREFETCHES.add(query)
 
     try:
-        stream_info = resolve_stream_url(query)
-        stream_url = stream_info.get("url")
-        if not stream_url:
-            return
-
-        req = urllib.request.Request(stream_url, headers={"User-Agent": "Mozilla/5.0"})
-        with safe_urlopen(req, timeout=15) as upstream, open(tmp_file, "wb") as out_f:
+        upstream, _ = open_stream(query, {"User-Agent": "Mozilla/5.0"})
+        with upstream, open(tmp_file, "wb") as out_f:
             while True:
                 chunk = upstream.read(64 * 1024)
                 if not chunk:
@@ -1724,30 +1739,121 @@ def download_track_to_cache_worker(query: str):
         with ACTIVE_PREFETCHES_LOCK:
             ACTIVE_PREFETCHES.discard(query)
 
-def resolve_stream_url(query: str) -> dict:
-    """Resolve direct audio streaming URL using yt-dlp with caching."""
-    cache_key = query.strip().lower()
-    now = time.time()
-    with STREAM_CACHE_LOCK:
-        if cache_key in STREAM_CACHE:
-            item = STREAM_CACHE[cache_key]
-            if now - item.get("timestamp", 0) < 7200:
-                return item
+# Which YouTube video each search query resolved to. Stream URLs expire after a few hours, video ids
+# do not, so replaying a song later skips the YouTube search (~1.5 s).
+STREAM_IDS_FILE = os.path.join(STREAM_CACHE_DIR, "video_ids.json")
+try:
+    with open(STREAM_IDS_FILE, encoding="utf-8") as _f:
+        STREAM_IDS: Dict[str, str] = json.load(_f)
+except (OSError, ValueError):
+    STREAM_IDS = {}
+_resolve_locks: Dict[str, Lock] = {}
 
+# Resolved stream links survive a restart: YouTube links stay valid for ~6 h ("expire" in the URL), so
+# songs from the last session start at once after reopening the app
+STREAM_LINKS_FILE = os.path.join(STREAM_CACHE_DIR, "stream_links.json")
+
+def _link_fresh(item: dict) -> bool:
+    return time.time() < item.get("expires", item.get("timestamp", 0) + 7200) - 300
+
+try:
+    with open(STREAM_LINKS_FILE, encoding="utf-8") as _f:
+        STREAM_CACHE.update({k: v for k, v in json.load(_f).items() if _link_fresh(v)})
+except (OSError, ValueError, AttributeError):
+    pass
+
+def _save_stream_links():
+    with STREAM_CACHE_LOCK:
+        snapshot = {k: v for k, v in STREAM_CACHE.items() if _link_fresh(v)}
+    try:
+        tmp = STREAM_LINKS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(snapshot, f)
+        os.replace(tmp, STREAM_LINKS_FILE)
+    except OSError:
+        pass
+
+def _remember_video_id(cache_key: str, video_id: str):
+    with STREAM_CACHE_LOCK:
+        if STREAM_IDS.get(cache_key) == video_id:
+            return
+        STREAM_IDS[cache_key] = video_id
+        snapshot = dict(STREAM_IDS)
+    try:
+        tmp = STREAM_IDS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(snapshot, f)
+        os.replace(tmp, STREAM_IDS_FILE)
+    except OSError:
+        pass
+
+def resolve_stream_url(query: str, clients: Optional[List[str]] = None, fresh: bool = False) -> dict:
+    """
+    Resolve direct audio streaming URL using yt-dlp with caching. `fresh` skips the cached link (YouTube
+    refused it); `clients` overrides the YouTube clients to ask (see open_stream).
+    """
+    cache_key = query.strip().lower()
+
+    def cached():
+        with STREAM_CACHE_LOCK:
+            item = STREAM_CACHE.get(cache_key)
+            return item if item and _link_fresh(item) else None
+
+    use_cache = not fresh and clients is None
+    item = cached() if use_cache else None
+    if item:
+        return item
+    # One resolution per song at a time: pressing play while a warm-up is running waits for it
+    with STREAM_CACHE_LOCK:
+        lock = _resolve_locks.setdefault(cache_key, Lock())
+    with lock:
+        item = cached() if use_cache else None
+        if item:
+            return item
+        return _resolve_stream_url_uncached(query, cache_key, clients)
+
+def open_stream(query: str, headers: dict):
+    """
+    Open the YouTube audio stream for a song: (upstream response, stream info). YouTube refuses some links
+    (HTTP 403), especially on networks it has flagged, so a refused link is resolved again (a new link
+    often works) and then with the android client, whose lower-quality stream still plays when every
+    other client is refused or bot-checked.
+    """
+    attempts = (lambda: resolve_stream_url(query),
+                lambda: resolve_stream_url(query, fresh=True),
+                lambda: resolve_stream_url(query, clients=['android']))
+    for i, resolve in enumerate(attempts):
+        info = resolve()
+        try:
+            return safe_urlopen(urllib.request.Request(info['url'], headers=headers), timeout=10), info
+        except urllib.error.HTTPError as e:
+            if e.code != 403 or i == len(attempts) - 1:
+                raise
+
+def _resolve_stream_url_uncached(query: str, cache_key: str, clients: Optional[List[str]] = None) -> dict:
     from download_playlist import _YT_EXTRACTOR_ARGS
+    now = time.time()
 
     ydl_opts = {
         'format': 'bestaudio/best',
         'quiet': True,
         'noplaylist': True,
         'no_warnings': True,
-        'extractor_args': _YT_EXTRACTOR_ARGS,
+        # Streaming needs the audio formats only: skipping the metadata ("next") request saves ~1.3 s
+        'extractor_args': {'youtube': {**_YT_EXTRACTOR_ARGS['youtube'], 'player_skip': ['initial_data'],
+                                       **({'player_client': clients} if clients else {})}},
     }
     ffmpeg_loc = find_ffmpeg()
     if ffmpeg_loc:
         ydl_opts['ffmpeg_location'] = ffmpeg_loc
 
-    search_query = query if query.startswith("http") else f"ytsearch1:{query}"
+    known_id = STREAM_IDS.get(cache_key)
+    if query.startswith("http"):
+        search_query = query
+    elif known_id:
+        search_query = f"https://www.youtube.com/watch?v={known_id}"
+    else:
+        search_query = f"ytsearch1:{query}"
 
     def extract():
         import yt_dlp as _ytdlp  # re-resolved so in-app updates take effect
@@ -1768,27 +1874,26 @@ def resolve_stream_url(query: str) -> dict:
 
     if not stream_url:
         raise ValueError("No audio stream available")
+    if entry.get('id') and not query.startswith("http"):
+        _remember_video_id(cache_key, entry['id'])
 
-    content_type = "audio/webm"
-    total_size = 0
-    try:
-        req = urllib.request.Request(stream_url, headers={'User-Agent': 'Mozilla/5.0'})
-        with safe_urlopen(req, timeout=4) as probe:
-            content_type = probe.headers.get('Content-Type', 'audio/webm')
-            total_size = int(probe.headers.get('Content-Length', 0))
-    except Exception:
-        pass
+    # yt-dlp already knows the format and size: no need for an extra round trip to YouTube
+    content_type = "audio/mp4" if entry.get('ext') in ("m4a", "mp4") else "audio/webm"
+    total_size = int(entry.get('filesize') or entry.get('filesize_approx') or 0)
 
+    expire = re.search(r"[?&]expire=(\d+)", stream_url)
     res = {
         'url': stream_url,
         'content_type': content_type,
         'total_size': total_size,
         'duration': duration,
         'title': title,
-        'timestamp': now
+        'timestamp': now,
+        'expires': int(expire.group(1)) if expire else now + 7200,
     }
     with STREAM_CACHE_LOCK:
         STREAM_CACHE[cache_key] = res
+    _save_stream_links()
     return res
 
 @app.get("/api/stream/info")
@@ -1828,17 +1933,9 @@ def stream_audio_live(q: str, request: Request, background_tasks: BackgroundTask
     # 2. If already cached in .stream_cache, serve directly from SSD with 0 latency!
     cache_file, tmp_file = get_stream_cache_path(q)
     if os.path.isfile(cache_file) and os.path.getsize(cache_file) > 100000:
-        return stream_file_with_range(cache_file, request, "audio/mp4")
+        return stream_file_with_range(cache_file, request, cached_audio_type(cache_file))
 
-    # 3. Resolve live stream URL
-    try:
-        stream_info = resolve_stream_url(q)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Streaming error: {str(e)}")
-
-    stream_url = stream_info['url']
-    content_type = stream_info.get('content_type', 'audio/webm')
-
+    # 3. Resolve and open the live stream (re-resolving if YouTube refuses the link)
     req_headers = {'User-Agent': 'Mozilla/5.0'}
     range_header = request.headers.get("range")
     if range_header:
@@ -1846,16 +1943,10 @@ def stream_audio_live(q: str, request: Request, background_tasks: BackgroundTask
 
     try:
         try:
-            upstream = safe_urlopen(urllib.request.Request(stream_url, headers=req_headers), timeout=10)
-        except urllib.error.HTTPError as e:
-            if e.code != 403:
-                raise
-            # Stream URLs expire or get refused: forget the cached one and resolve a fresh URL once
-            with STREAM_CACHE_LOCK:
-                STREAM_CACHE.pop(q.strip().lower(), None)
-            stream_info = resolve_stream_url(q)
-            stream_url = stream_info['url']
-            upstream = safe_urlopen(urllib.request.Request(stream_url, headers=req_headers), timeout=10)
+            upstream, stream_info = open_stream(q, req_headers)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Streaming error: {str(e)}")
+        content_type = stream_info.get('content_type', 'audio/webm')
         status_code = upstream.status
 
         resp_headers = {
@@ -1877,6 +1968,7 @@ def stream_audio_live(q: str, request: Request, background_tasks: BackgroundTask
         if is_full_stream and not os.path.isfile(cache_file):
             def iter_stream_and_cache():
                 out_f = None
+                complete = False
                 try:
                     out_f = open(tmp_file, "wb")
                 except Exception:
@@ -1899,12 +1991,18 @@ def stream_audio_live(q: str, request: Request, background_tasks: BackgroundTask
                         out_f = None
                         if os.path.isfile(tmp_file) and os.path.getsize(tmp_file) > 100000:
                             os.replace(tmp_file, cache_file)
+                            complete = True
                             clean_stream_cache()
                 finally:
                     if out_f:
                         try:
                             out_f.close()
                         except Exception:
+                            pass
+                    if not complete and os.path.isfile(tmp_file):
+                        try:
+                            os.remove(tmp_file)
+                        except OSError:
                             pass
                     upstream.close()
 
@@ -1953,6 +2051,46 @@ def audio_analysis_route(filename: Optional[str] = None, q: Optional[str] = None
         return {"ready": False}
     res = audio_analysis.analyze(path, find_ffmpeg())
     return {"ready": True, **res} if res else {"ready": False}
+
+# A song under the pointer is about to be played: it gets its own workers so automatic warm-ups
+# (top search results, the next song) never queue in front of it
+_warm_pools = {
+    True: ThreadPoolExecutor(max_workers=2, thread_name_prefix="stream-warm"),
+    False: ThreadPoolExecutor(max_workers=1, thread_name_prefix="stream-prewarm"),
+}
+_warming: set = set()
+
+def _warm_stream(q: str):
+    try:
+        resolve_stream_url(q)
+    except Exception:
+        pass
+    finally:
+        with ACTIVE_PREFETCHES_LOCK:
+            _warming.discard(q)
+
+@app.get("/api/stream/warm")
+def warm_stream(q: str, urgent: bool = False):
+    """
+    Resolve a song's stream URL ahead of time (on hover, for top search results, for the next song) so
+    pressing play starts in a fraction of a second instead of waiting ~3-5 s for YouTube extraction.
+    """
+    q = (q or "").strip()
+    if not q:
+        return {"status": "ignored"}
+    cache_file, _ = get_stream_cache_path(q)
+    with STREAM_CACHE_LOCK:
+        item = STREAM_CACHE.get(q.lower())
+    if (item and _link_fresh(item)) or os.path.isfile(cache_file):
+        return {"status": "ready"}
+    with ACTIVE_PREFETCHES_LOCK:
+        if q in _warming:
+            return {"status": "warming"}
+        if len(_warming) >= 6:   # the user is sweeping the mouse across a list: don't queue every row
+            return {"status": "busy"}
+        _warming.add(q)
+    _warm_pools[urgent].submit(_warm_stream, q)
+    return {"status": "warming"}
 
 @app.api_route("/api/stream/prefetch", methods=["GET", "POST"])
 def prefetch_stream_audio(q: str, background_tasks: BackgroundTasks):

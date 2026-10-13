@@ -1398,6 +1398,21 @@ body {
   box-shadow: 0 0 20px var(--emerald-glow);
 }
 
+/* Loading a song (an online stream can take a few seconds to start): a ring spins around Play */
+.ctrl-btn-play, .fs-play-btn { position: relative; }
+.ctrl-btn-play.is-buffering::after, .fs-play-btn.is-buffering::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  border-top-color: var(--emerald);
+  border-right-color: var(--emerald);
+  animation: play-buffering-spin 0.8s linear infinite;
+  pointer-events: none;
+}
+@keyframes play-buffering-spin { to { transform: rotate(360deg); } }
+
 .dock-scrubber-row {
   display: flex;
   align-items: center;
