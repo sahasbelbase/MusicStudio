@@ -853,6 +853,11 @@ def download_single_track(
                 raise RuntimeError(f"FFmpeg conversion failed to produce {temp_mp3}")
             embed_id3_tags(temp_mp3, track_info, enriched_metadata)
             shutil.move(temp_mp3, target_filepath)
+            try:
+                import lyrics
+                lyrics.fetch_and_save_lrc(target_filepath, track_info)
+            except Exception:
+                pass
             return True, "downloaded", target_filename
                 
         except Exception as e:

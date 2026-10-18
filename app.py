@@ -49,6 +49,7 @@ from download_playlist import (
 )
 import discovery
 import audio_analysis
+import lyrics
 from fix_metadata import process_file as enrich_single_file, fetch_itunes_metadata
 
 app = FastAPI(title="Music Studio")
@@ -2051,6 +2052,53 @@ def audio_analysis_route(filename: Optional[str] = None, q: Optional[str] = None
         return {"ready": False}
     res = audio_analysis.analyze(path, find_ffmpeg())
     return {"ready": True, **res} if res else {"ready": False}
+
+# ==================== SYNCHRONIZED LYRICS ====================
+@app.get("/api/lyrics")
+def get_track_lyrics(
+    title: Optional[str] = None,
+    artist: Optional[str] = None,
+    album: Optional[str] = None,
+    duration: Optional[float] = None,  # streams can report fractional seconds; an int here made those requests fail
+    filename: Optional[str] = None,
+    force: bool = False
+):
+    """
+    Fetch synchronized (LRC) or plain lyrics for any track (local or streamed).
+    Checks local .lrc file and ID3 tags first, then queries LRCLIB, and caches locally.
+    """
+    title = (title or "").strip()
+    artist = (artist or "").strip()
+    if not title and filename:
+        title = filename[:-4] if filename.lower().endswith(".mp3") else filename
+
+    res = lyrics.get_lyrics(
+        title=title,
+        artist=artist,
+        album=album,
+        duration=round(duration) if duration else None,
+        filename=filename,
+        force_refresh=force,
+        songs_dir=SONGS_DIR
+    )
+    return res
+
+@app.post("/api/lyrics/sync-library")
+def sync_library_lyrics_route():
+    """Start background sync of lyrics for all downloaded library songs missing .lrc files."""
+    lyrics.sync_library_lyrics(SONGS_DIR)
+    return {"status": "started"}
+
+@app.get("/api/lyrics/sync-status")
+def sync_library_lyrics_status():
+    """Check progress of library lyrics synchronization."""
+    return lyrics.get_sync_status()
+
+@app.post("/api/lyrics/cancel-sync")
+def cancel_sync_library_lyrics():
+    """Cancel the ongoing background sync."""
+    lyrics.cancel_sync()
+    return {"status": "cancelled"}
 
 # A song under the pointer is about to be played: it gets its own workers so automatic warm-ups
 # (top search results, the next song) never queue in front of it

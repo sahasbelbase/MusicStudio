@@ -24,8 +24,12 @@ else:
 datas = [
     (os.path.join(BASE_DIR, 'static'), 'static'),
 ]
+if os.path.exists(os.path.join(BASE_DIR, 'data', 'playlists.json')):
+    datas.append((os.path.join(BASE_DIR, 'data', 'playlists.json'), 'data'))
+
 
 hiddenimports = [
+    'lyrics',
     'audio_analysis',
     'curl_cffi',
 

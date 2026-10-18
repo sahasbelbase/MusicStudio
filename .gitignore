@@ -80,6 +80,7 @@ releases/MusicStudio-Windows-x64/
 
 # Runtime User Play Stats (State file generated on song playback)
 data/play_stats.json
+data/lyrics/
 
 # Atomic-save scratch and backup copies of the app data files
 *.json.tmp

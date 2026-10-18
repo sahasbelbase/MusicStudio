@@ -16,6 +16,7 @@ datas = [
 ]
 
 hiddenimports = [
+    'lyrics',
     'audio_analysis',
     'spotapi',
     'curl_cffi',

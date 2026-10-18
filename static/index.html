@@ -15,7 +15,7 @@
       rel="stylesheet"
     />
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
-    <link rel="stylesheet" href="style.css?v=3.6.0" />
+    <link rel="stylesheet" href="style.css?v=3.7.0" />
   </head>
   <body>
     <!-- Subtle Ambient Backdrop Glows -->
@@ -412,6 +412,15 @@
                   </svg>
                   <span>Import</span>
                 </button>
+                <button class="lib-action-btn" id="btn-lib-sync-lyrics" title="Fetch offline synchronized lyrics for all downloaded songs">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                    <line x1="12" y1="19" x2="12" y2="23"/>
+                    <line x1="8" y1="23" x2="16" y2="23"/>
+                  </svg>
+                  <span>Sync Lyrics</span>
+                </button>
                 <button class="lib-action-btn lib-action-icon" id="btn-choose-device-music" title="Choose a music folder on this device">
                   <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
@@ -442,6 +451,37 @@
               <div class="app-update-actions">
                 <button class="btn-secondary" id="btn-check-app-update">Check for Updates</button>
                 <button class="btn-primary" id="btn-app-update-download" style="display: none;">Download</button>
+              </div>
+            </div>
+
+            <div class="settings-card glass" id="setting-card-lyrics">
+              <div class="settings-card-head">
+                <div class="settings-icon">🎤</div>
+                <div>
+                  <h4>Synchronized Lyrics</h4>
+                  <p>Spotify-style real-time lyrics & offline sync</p>
+                </div>
+              </div>
+              <div class="app-update-status" id="lyrics-sync-status-text">
+                Lyrics automatically download and highlight in bold as words are sung.
+              </div>
+              <div class="lyrics-sync-progress-wrap" id="lyrics-sync-progress-wrap" style="display: none; margin-top: 12px;">
+                <div class="hud-progress-info" style="margin-bottom: 6px; display: flex; justify-content: space-between; font-size: 0.8rem;">
+                  <span class="hud-pct" id="lyrics-sync-pct" style="font-weight: 700; color: #34d399;">0%</span>
+                  <span class="hud-count" id="lyrics-sync-count" style="color: var(--text-secondary);">0 / 0</span>
+                </div>
+                <div class="hud-track" style="height: 6px; background: rgba(255, 255, 255, 0.08); border-radius: 4px; overflow: hidden;">
+                  <div class="hud-fill" id="lyrics-sync-bar" style="width: 0%; height: 100%; background: var(--emerald); transition: width 0.3s ease;"></div>
+                </div>
+                <div id="lyrics-sync-song-label" style="font-size: 0.74rem; color: var(--text-tertiary); margin-top: 6px;" class="truncate">Scanning library...</div>
+              </div>
+              <div class="app-update-actions" style="margin-top: 14px; display: flex; gap: 8px;">
+                <button class="btn-secondary" id="btn-sync-library-lyrics" title="Download offline lyrics for all already downloaded songs">
+                  Sync Lyrics for Downloaded Songs
+                </button>
+                <button class="btn-secondary" id="btn-cancel-lyrics-sync" style="display: none;" title="Cancel sync">
+                  Cancel
+                </button>
               </div>
             </div>
 
@@ -616,12 +656,6 @@
               </svg>
               <span class="repeat-badge" id="repeat-badge">1</span>
             </button>
-            <button class="ctrl-btn transition-toggle-btn" id="player-transition-btn" title="Smart Transition (T)" aria-label="Toggle Smart Transition">
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M12 3L13.8 9.2L20 11L13.8 12.8L12 19L10.2 12.8L4 11L10.2 9.2Z"/>
-                <path d="M19 2l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z" stroke-width="1.5"/>
-              </svg>
-            </button>
           </div>
 
           <div class="dock-scrubber-row">
@@ -635,8 +669,16 @@
         </div>
 
         <div class="dock-volume-col">
+          <button class="volume-btn lyrics-btn" id="player-lyrics-btn" title="Lyrics Mode (L)" aria-label="Toggle Lyrics">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              <line x1="12" y1="19" x2="12" y2="22"/>
+              <line x1="8" y1="22" x2="16" y2="22"/>
+            </svg>
+          </button>
           <button class="volume-btn queue-btn" id="player-queue-btn" title="Open Play Queue">
-            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="8" y1="6" x2="21" y2="6"/>
               <line x1="8" y1="12" x2="21" y2="12"/>
               <line x1="8" y1="18" x2="21" y2="18"/>
@@ -646,8 +688,14 @@
             </svg>
             <span class="queue-badge" id="queue-badge" style="display: none;">0</span>
           </button>
+          <button class="volume-btn transition-toggle-btn" id="player-transition-btn" title="Smart Transition (T)" aria-label="Toggle Smart Transition">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 3L13.8 9.2L20 11L13.8 12.8L12 19L10.2 12.8L4 11L10.2 9.2Z"/>
+              <path d="M19 2l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z" stroke-width="1.5"/>
+            </svg>
+          </button>
           <button class="volume-btn" id="player-mute-btn" title="Mute / Unmute">
-            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" id="volume-icon">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" id="volume-icon">
               <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
               <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" />
             </svg>
@@ -1087,6 +1135,14 @@
         </div>
 
         <div style="display: flex; align-items: center; gap: 8px;">
+          <button class="fs-icon-btn fs-lyrics-btn" id="fs-lyrics-btn" title="Lyrics Mode (L)" aria-label="Toggle Lyrics">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              <line x1="12" y1="19" x2="12" y2="22"/>
+              <line x1="8" y1="22" x2="16" y2="22"/>
+            </svg>
+          </button>
           <button class="fs-icon-btn fs-queue-labeled" id="fs-queue-btn" title="Queue: see what plays next">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="8" y1="6" x2="21" y2="6"/>
@@ -1109,28 +1165,49 @@
       </div>
 
       <!-- Center Hero Stage -->
-      <div class="fs-stage">
-        <div class="fs-cover-container">
-          <img id="fs-cover" src="placeholder.svg" alt="Album Cover" class="fs-cover-img" />
-          <div class="fs-stream-badge-floating" id="fs-stream-badge-floating" style="display: none;">
-            <span class="live-dot-pulse"></span>
-            <span>Online Stream</span>
+      <div class="fs-stage" id="fs-stage">
+        <!-- Cover Art View (Default) -->
+        <div class="fs-cover-stage" id="fs-cover-stage">
+          <div class="fs-cover-container">
+            <img id="fs-cover" src="placeholder.svg" alt="Album Cover" class="fs-cover-img" />
+            <div class="fs-stream-badge-floating" id="fs-stream-badge-floating" style="display: none;">
+              <span class="live-dot-pulse"></span>
+              <span>Online Stream</span>
+            </div>
+          </div>
+
+          <div class="fs-metadata">
+            <h1 id="fs-title" class="fs-track-title truncate">Select a song to play</h1>
+            <h2 id="fs-artist" class="fs-track-artist truncate">Music Studio</h2>
+            <span id="fs-album" class="fs-track-album truncate"></span>
+            <div class="fs-stream-actions" id="fs-stream-actions" style="display: none;">
+              <button class="fs-save-btn" id="fs-save-btn" title="Download to your library (320 kbps MP3)">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                <span id="fs-save-text">Save to Library (320 kbps)</span>
+              </button>
+            </div>
           </div>
         </div>
 
-        <div class="fs-metadata">
-          <h1 id="fs-title" class="fs-track-title truncate">Select a song to play</h1>
-          <h2 id="fs-artist" class="fs-track-artist truncate">Music Studio</h2>
-          <span id="fs-album" class="fs-track-album truncate"></span>
-          <div class="fs-stream-actions" id="fs-stream-actions" style="display: none;">
-            <button class="fs-save-btn" id="fs-save-btn" title="Download to your library (320 kbps MP3)">
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                <polyline points="7 10 12 15 17 10" />
-                <line x1="12" y1="15" x2="12" y2="3" />
-              </svg>
-              <span id="fs-save-text">Save to Library (320 kbps)</span>
-            </button>
+        <!-- Lyrics View (Spotify-Style Real-time Synced Stream) -->
+        <div class="fs-lyrics-stage" id="fs-lyrics-stage" style="display: none;">
+          <div class="fs-lyrics-header-mini">
+            <img id="fs-lyrics-art-mini" class="fs-lyrics-art-mini" src="placeholder.svg" alt="" />
+            <div class="fs-lyrics-info-mini">
+              <div class="fs-lyrics-title-mini truncate" id="fs-lyrics-title-mini">Title</div>
+              <div class="fs-lyrics-artist-mini truncate" id="fs-lyrics-artist-mini">Artist</div>
+            </div>
+            <div class="fs-lyrics-badge" id="fs-lyrics-badge">SYNCED</div>
+          </div>
+          <div class="fs-lyrics-scroll" id="fs-lyrics-scroll">
+            <div class="lyrics-loading-state">
+              <div class="lyrics-spinner"></div>
+              <span>Loading synchronized lyrics...</span>
+            </div>
           </div>
         </div>
 
@@ -1145,6 +1222,15 @@
 
         <!-- Primary Transport Controls -->
         <div class="fs-controls">
+          <button class="fs-ctrl-btn fs-lyrics-btn" id="fs-lyrics-ctrl-btn" title="Lyrics Mode (L)" aria-label="Toggle Lyrics">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              <line x1="12" y1="19" x2="12" y2="22"/>
+              <line x1="8" y1="22" x2="16" y2="22"/>
+            </svg>
+          </button>
+
           <button class="fs-ctrl-btn" id="fs-shuffle" title="Shuffle Mode (S)">
             <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="16 3 21 3 21 8" />
@@ -1257,6 +1343,6 @@
     <!-- Notification Toasts -->
     <div id="toast-container" class="toast-stack"></div>
 
-    <script src="app.js?v=3.6.0"></script>
+    <script src="app.js?v=3.7.0"></script>
   </body>
 </html>

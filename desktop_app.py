@@ -326,8 +326,10 @@ def set_windows_relaunch_properties(hwnd):
         launcher = os.path.join(BASE_DIR, "MusicStudio.exe")
         if not os.path.isfile(launcher):
             launcher = ""
+    # The frozen exe has the icon built in. Its BASE_DIR is PyInstaller's temp folder, which is
+    # deleted when the app quits, so a pinned taskbar icon pointing at a .ico there goes blank
     icon = os.path.join(BASE_DIR, "MusicStudio.ico")
-    if not os.path.isfile(icon):
+    if getattr(sys, "frozen", False) or not os.path.isfile(icon):
         icon = launcher
 
     props = [(5, "com.musicstudio.app")]  # AppUserModel.ID
