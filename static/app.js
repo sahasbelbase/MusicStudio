@@ -6062,20 +6062,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
         lineDiv.addEventListener('click', () => {
           if (activeDeck && !isNaN(line.time)) {
-            activeDeck.currentTime = line.time;
+            // Same path as the progress bar: during a smart transition the new song is held on the old
+            // song's beat, which snapped a plain currentTime jump straight back, so the transition ends first
+            seekAudioTo(line.time);
             const effectiveDur = getEffectiveAudioDuration();
             if (effectiveDur > 0) {
-              const pct = (line.time / effectiveDur) * 100;
+              const pct = (activeDeck.currentTime / effectiveDur) * 100;
               playerScrubber.value = pct;
               updateScrubberFill(pct);
               if (fsScrubber) {
                 fsScrubber.value = pct;
                 updateFsScrubberFill(pct);
               }
-            }
-            updateLyricsTime(line.time);
-            if (isLyricsMode && !activeDeck.paused) {
-              startLyricsRaf();
             }
           }
         });

@@ -48,6 +48,9 @@ _sync_status = {
     "cancelled": False
 }
 
+# Songs whose saved plain lyrics were already checked online for a synced version this run
+_plain_upgrade_tried = set()
+
 
 def sanitize_filename(name: str) -> str:
     """Sanitize filename to prevent invalid characters across OSes."""
@@ -329,6 +332,8 @@ def fetch_lrclib(title: str, artist: str, album: Optional[str] = None, duration:
             with safe_urlopen(req, timeout=6) as resp:
                 data = json.loads(resp.read().decode('utf-8'))
                 if data:
+                    if not data.get("syncedLyrics") and not data.get("instrumental"):
+                        return find_synced_version(data, duration) or data
                     return data
         except urllib.error.HTTPError as e:
             if e.code == 404:
@@ -372,6 +377,38 @@ def fetch_lrclib(title: str, artist: str, album: Optional[str] = None, duration:
             continue
 
     return None
+
+
+def find_synced_version(record: Dict[str, Any], duration: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    """
+    LRCLIB keeps many uploads of the same song, and /api/get can return one that only has plain
+    lyrics while another upload of the same length has them synced. Plain lyrics can't follow the
+    song or be tapped to seek, so look for a synced upload within a few seconds of the length.
+    """
+    params = {"track_name": record.get("trackName") or "", "artist_name": record.get("artistName") or ""}
+    if not params["track_name"]:
+        return None
+    ref = duration or record.get("duration")
+    url = f"https://lrclib.net/api/search?{urllib.parse.urlencode(params)}"
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    try:
+        with safe_urlopen(req, timeout=6) as resp:
+            results = json.loads(resp.read().decode('utf-8'))
+    except Exception:
+        return None
+    if not isinstance(results, list):
+        return None
+    synced = [r for r in results if is_synced_match(r, ref)]
+    if ref:
+        synced.sort(key=lambda r: abs((r.get("duration") or 0) - ref))
+    return synced[0] if synced else None
+
+
+def is_synced_match(record: Optional[Dict[str, Any]], duration: Optional[float] = None) -> bool:
+    """Synced lyrics whose timings fit a song of this length (LRCLIB itself matches lengths within 2 s)."""
+    if not record or not record.get("syncedLyrics"):
+        return False
+    return not duration or abs((record.get("duration") or 0) - duration) <= 3
 
 
 def save_lyrics_cache(artist: str, title: str, lrc_text: str, filename: Optional[str] = None, songs_dir: Optional[str] = None):
@@ -428,13 +465,23 @@ def get_lyrics(
     target_dir = songs_dir or DEFAULT_OUTPUT_FOLDER
 
     # 1. Try local first
+    local_res = None
     if not force_refresh:
         local_res = get_local_lyrics(title, artist, filename=filename, songs_dir=target_dir)
-        if local_res and (local_res.get("synced") or local_res.get("plain")):
+        if local_res and local_res.get("synced"):
             return local_res
+        if local_res and local_res.get("plain"):
+            # Saved plain lyrics may predate a synced upload (or an older lookup that settled for
+            # plain ones): look online once per run, and keep the plain ones if nothing better turns up
+            key = (filename or "", artist, title)
+            if key in _plain_upgrade_tried:
+                return local_res
+            _plain_upgrade_tried.add(key)
 
     # 2. Fetch from LRCLIB
     remote_data = fetch_lrclib(title, artist, album=album, duration=duration)
+    if local_res and not is_synced_match(remote_data, duration):
+        return local_res
     if not remote_data:
         return {
             "synced": False,
